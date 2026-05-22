@@ -15,6 +15,213 @@ function hashPassword(password, salt) {
   return crypto.createHash('sha256').update(salt + '|' + password).digest('hex');
 }
 
+// === KIS Stock API Integration & Caching ===
+let kisToken = null;
+let kisTokenExpires = 0; // Timestamp when token expires
+let cachedStockPrices = {}; // { [code]: { code, price, name, updatedAt } }
+let isFetchingPrices = false;
+
+// Helper to wait/sleep
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function getKISAccessToken() {
+  const appKey = process.env.KIS_APP_KEY;
+  const appSecret = process.env.KIS_APP_SECRET;
+  const isMock = process.env.KIS_IS_MOCK !== 'false';
+
+  if (!appKey || !appSecret) {
+    throw new Error('KIS Credentials (KIS_APP_KEY, KIS_APP_SECRET) are not configured in environment.');
+  }
+
+  // Use cached token if valid (expires in 24 hours, safety margin 1 hour)
+  const now = Date.now();
+  if (kisToken && kisTokenExpires > now + 3600000) {
+    return kisToken;
+  }
+
+  const baseUrl = isMock
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+
+  console.log('[KIS API] Requesting new Access Token...');
+  const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      grant_type: 'client_credentials',
+      appkey: appKey,
+      appsecret: appSecret
+    })
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`KIS Token fetch failed with status ${res.status}: ${errorText}`);
+  }
+
+  const data = await res.json();
+  if (!data.access_token) {
+    throw new Error(`KIS Token response did not contain access_token: ${JSON.stringify(data)}`);
+  }
+
+  kisToken = data.access_token;
+  
+  // Parse expiration (Format: "2026-05-23 12:00:00") or default to +23 hours
+  let expiresAt = now + 23 * 60 * 60 * 1000;
+  if (data.access_token_token_expired) {
+    const parsed = new Date(data.access_token_token_expired.replace(' ', 'T'));
+    if (!isNaN(parsed.getTime())) {
+      expiresAt = parsed.getTime();
+    }
+  }
+  kisTokenExpires = expiresAt;
+  console.log('[KIS API] Successfully retrieved and cached new Access Token.');
+  return kisToken;
+}
+
+async function fetchStockPricesFromKIS() {
+  if (isFetchingPrices) {
+    console.log('[KIS API] Fetch already in progress. Skipping.');
+    return;
+  }
+  isFetchingPrices = true;
+
+  try {
+    const appKey = process.env.KIS_APP_KEY;
+    const appSecret = process.env.KIS_APP_SECRET;
+    const isMock = process.env.KIS_IS_MOCK !== 'false';
+
+    if (!appKey || !appSecret) {
+      console.warn('[KIS API] KIS Credentials not configured. Skipping price fetch.');
+      isFetchingPrices = false;
+      return;
+    }
+
+    // Query active stocks from database settings
+    const [settings] = await db.query('SELECT `value` FROM settings WHERE `key` = ?', ['stockMarket']);
+    if (settings.length === 0) {
+      console.log('[KIS API] No stockMarket settings found in database.');
+      isFetchingPrices = false;
+      return;
+    }
+
+    let stockMarket = settings[0].value;
+    if (typeof stockMarket === 'string') {
+      try { stockMarket = JSON.parse(stockMarket); } catch (e) {}
+    }
+
+    if (!stockMarket || !stockMarket.enabled) {
+      console.log('[KIS API] Stock market is disabled. Skipping price fetch.');
+      isFetchingPrices = false;
+      return;
+    }
+
+    const stocks = stockMarket.stocks || [];
+    if (stocks.length === 0) {
+      console.log('[KIS API] No active stocks configured.');
+      isFetchingPrices = false;
+      return;
+    }
+
+    const token = await getKISAccessToken();
+    const baseUrl = isMock
+      ? 'https://openapivts.koreainvestment.com:29443'
+      : 'https://openapi.koreainvestment.com:9443';
+
+    console.log(`[KIS API] Fetching prices for ${stocks.length} stocks sequentially (Mock env: ${isMock})...`);
+
+    for (let i = 0; i < stocks.length; i++) {
+      const stock = stocks[i];
+      const code = stock.code;
+      if (!code) continue;
+
+      const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}`;
+      const headers = {
+        'content-type': 'application/json; charset=utf-8',
+        'authorization': `Bearer ${token}`,
+        'appkey': appKey,
+        'appsecret': appSecret,
+        'tr_id': 'FHKST01010100',
+        'custtype': 'P'
+      };
+
+      try {
+        let response = null;
+        let retries = 2;
+        let lastError = '';
+
+        while (retries >= 0) {
+          try {
+            response = await fetch(url, { method: 'GET', headers });
+            if (response && response.ok) {
+              break;
+            }
+            lastError = response ? `HTTP ${response.status}` : 'Unknown error';
+          } catch (e) {
+            lastError = e.toString();
+          }
+
+          if (retries > 0) {
+            await sleep(1500);
+          }
+          retries--;
+        }
+
+        if (!response || !response.ok) {
+          console.error(`[KIS API] Price fetch failed for stock ${code} (${stock.name}): ${lastError}`);
+          continue;
+        }
+
+        const resJson = await response.json();
+        if (resJson && resJson.output) {
+          const priceVal = parseInt(resJson.output.stck_prpr, 10);
+          if (!isNaN(priceVal)) {
+            cachedStockPrices[code] = {
+              code: code,
+              price: priceVal,
+              name: resJson.output.hts_kor_shr_nme || stock.name || '',
+              updatedAt: Date.now()
+            };
+            console.log(`[KIS API] Updated stock ${code} (${stock.name}): ${priceVal} KRW`);
+          } else {
+            console.warn(`[KIS API] Unexpected price format for stock ${code}: ${JSON.stringify(resJson.output)}`);
+          }
+        } else {
+          console.warn(`[KIS API] Price fetch response output missing for stock ${code}: ${JSON.stringify(resJson)}`);
+        }
+      } catch (err) {
+        console.error(`[KIS API] Error fetching stock ${code}:`, err);
+      }
+
+      // If in Mock mode, strictly sleep 1.2s to comply with the 2 requests/sec limit
+      if (isMock && i < stocks.length - 1) {
+        await sleep(1200);
+      }
+    }
+    console.log('[KIS API] Completed fetching all stock prices.');
+  } catch (error) {
+    console.error('[KIS API] Error in fetchStockPricesFromKIS:', error);
+  } finally {
+    isFetchingPrices = false;
+  }
+}
+
+// Background scheduler
+// Run 5 seconds after startup
+setTimeout(() => {
+  console.log('[Scheduler] Initial background stock price fetch triggered.');
+  fetchStockPricesFromKIS();
+}, 5000);
+
+// Run every 5 minutes (300,000 ms)
+setInterval(() => {
+  console.log('[Scheduler] Recurring background stock price fetch triggered.');
+  fetchStockPricesFromKIS();
+}, 300000);
+
+
 // PIN normalization helper (ensures 4 digits)
 function normalizePinDigits(raw) {
   let d = String(raw || '').replace(/\D/g, '');
@@ -285,7 +492,10 @@ app.get('/api/sync', async (req, res) => {
     const settingsKeys = [
       'version', 'titleGrants', 'behaviorNotes', 'classJobQuotas',
       'bankPayrollRequests', 'taxCollectionRequests', 'djRequests',
-      'recyclerLogs', 'envLogs', 'hallOfFame', 'cleaningChecklistRequests'
+      'recyclerLogs', 'envLogs', 'hallOfFame', 'cleaningChecklistRequests',
+      'digitalBoard', 'statisticsChecklist', 'statisticsApprovalRequests',
+      'postmanErrandRequests', 'lastDailyExpGrowthBoardKey',
+      'classTaxTotalManual', 'classTaxTotalManualConfirmed', 'stockMarket'
     ];
 
     for (const key of settingsKeys) {
@@ -548,7 +758,10 @@ app.post('/api/sync', async (req, res) => {
     const settingsKeys = [
       'version', 'titleGrants', 'behaviorNotes', 'classJobQuotas',
       'bankPayrollRequests', 'taxCollectionRequests', 'djRequests',
-      'recyclerLogs', 'envLogs', 'hallOfFame', 'cleaningChecklistRequests'
+      'recyclerLogs', 'envLogs', 'hallOfFame', 'cleaningChecklistRequests',
+      'digitalBoard', 'statisticsChecklist', 'statisticsApprovalRequests',
+      'postmanErrandRequests', 'lastDailyExpGrowthBoardKey',
+      'classTaxTotalManual', 'classTaxTotalManualConfirmed', 'stockMarket'
     ];
 
     for (const key of settingsKeys) {
@@ -613,6 +826,31 @@ app.post('/api/sync', async (req, res) => {
   } finally {
     conn.release();
   }
+});
+
+// GET /api/stocks/prices - Returns cached stock prices and KIS config status
+app.get('/api/stocks/prices', async (req, res) => {
+  const isConfigured = !!(process.env.KIS_APP_KEY && process.env.KIS_APP_SECRET);
+  
+  // If refresh query param is provided, trigger async fetch in the background
+  if (req.query.refresh === 'true') {
+    fetchStockPricesFromKIS().catch(err => console.error('[KIS API] Async refresh error:', err));
+  }
+
+  // If cache is empty and configured, try to fetch it synchronously for the first request
+  if (Object.keys(cachedStockPrices).length === 0 && isConfigured) {
+    try {
+      await fetchStockPricesFromKIS();
+    } catch (e) {
+      console.error('[KIS API] Synchronous initial fetch error:', e);
+    }
+  }
+
+  return res.json({
+    ok: true,
+    isConfigured,
+    data: cachedStockPrices
+  });
 });
 
 // Health check API

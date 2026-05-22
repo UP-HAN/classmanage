@@ -2986,21 +2986,6 @@
   function fetchRealtimePrices(db, callback, forceRefresh) {
     ensureStockMarket(db);
     
-    var urls = db.stockMarket.gasUrls || [];
-    // 만약 gasUrls가 비어있다면 기존 gasUrl을 폴백으로 사용
-    if (!urls.length || (urls.length === 3 && !urls[0] && !urls[1] && !urls[2])) {
-      if (db.stockMarket.gasUrl) {
-        urls = [db.stockMarket.gasUrl];
-      }
-    }
-    
-    // 유효한 URL들만 필터링
-    var validUrls = urls.map(function(u) { return (u || "").trim(); }).filter(Boolean);
-    
-    if (validUrls.length === 0) {
-      return callback({ ok: false, msg: "등록된 GAS 프록시 URL이 없습니다. 교사 설정 화면에서 등록해 주세요." });
-    }
-    
     var codes = db.stockMarket.stocks.map(function(s) { return s.code; });
     if (!codes.length) {
       return callback({ ok: true, data: {} });
@@ -3015,111 +3000,52 @@
       return callback({ ok: true, data: cachedPrices, cached: true });
     }
     
-    // 병렬 레이싱 및 타임아웃 구현
-    var hasResolved = false;
-    var completedCount = 0;
-    var errors = [];
-
-    function onSuccess(resData) {
-      if (hasResolved) return;
-      hasResolved = true;
-      
-      db.stockMarket.currentPrices = resData;
-      db.stockMarket.lastPricesUpdatedAt = Date.now();
-      
-      var session = C.getSession();
-      var isTeacher = session && session.role === "teacher";
-      if (isTeacher) {
-        saveDb(db);
-      } else {
-        C.hydrateDb(db);
-      }
-      callback({ ok: true, data: resData });
+    // Express 백엔드 API URL 구성
+    var apiUrl = (window.ClassStatusServerConfig && window.ClassStatusServerConfig.apiUrl) || "";
+    var url = apiUrl + "/api/stocks/prices";
+    if (forceRefresh === true) {
+      url += "?refresh=true";
     }
 
-    function onFailure(err, idx) {
-      completedCount++;
-      errors.push("URL " + (idx + 1) + ": " + err.message);
-      if (completedCount === validUrls.length && !hasResolved) {
-        callback({ 
-          ok: false, 
-          msg: "모든 GAS 프록시 URL 호출에 실패했습니다. (쿼터 초과 또는 네트워크 오류)\n" + errors.join("\n"), 
-          data: cachedPrices 
-        });
-      }
-    }
-
-    // 등록된 종목 수에 비례한 동적 타임아웃 계산 (최소 10초 ~ 최대 30초)
-    var stockCount = codes.length || 1;
-    var timeoutMs = 5000 + (stockCount * 2000);
-    timeoutMs = Math.max(10000, Math.min(30000, timeoutMs));
-    var timeoutSec = (timeoutMs / 1000).toFixed(1);
-
-    validUrls.forEach(function(currentUrl, index) {
-      var fullUrl = currentUrl + "?action=prices&codes=" + encodeURIComponent(codes.join(","));
-      var done = false;
-
-      var timer = setTimeout(function() {
-        if (!done) {
-          done = true;
-          console.warn("GAS URL " + (index + 1) + " 응답 대기 시간 초과 (" + timeoutSec + "초). 다음 또는 백업 URL을 사용합니다.");
-          onFailure(new Error("시간 초과 (" + timeoutSec + "초)"), index);
+    window.isFetchingStockPrices = true;
+    
+    fetch(url)
+      .then(function(r) {
+        if (!r.ok) {
+          throw new Error("HTTP 오류 " + r.status);
         }
-      }, timeoutMs);
-
-      fetch(fullUrl)
-        .then(function(r) { 
-          if (done) return;
-          if (!r.ok) {
-            throw new Error("HTTP 오류 " + r.status);
+        return r.json();
+      })
+      .then(function(res) {
+        window.isFetchingStockPrices = false;
+        if (res) {
+          window.stockPricesConfigured = res.isConfigured !== false;
+        }
+        if (res && res.ok && res.data) {
+          if (res.isConfigured === false) {
+            console.warn("한국투자증권 API 키가 Express 서버에 등록되지 않았습니다.");
           }
-          return r.json(); 
-        })
-        .then(function(res) {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-
-          if (res && res.ok) {
-            var errMsgs = [];
-            if (res.data) {
-              var keys = Object.keys(res.data);
-              var i;
-              for (i = 0; i < keys.length; i++) {
-                var k = keys[i];
-                if (res.data[k] && res.data[k].error) {
-                  errMsgs.push(res.data[k].error);
-                }
-              }
-            }
-            if (errMsgs.length > 0) {
-              var isQuotaErr = errMsgs.some(function(msg) {
-                var lower = String(msg).toLowerCase();
-                return lower.indexOf("urlfetch") >= 0 || lower.indexOf("너무 많이 호출") >= 0 || lower.indexOf("quota") >= 0 || lower.indexOf("limit") >= 0;
-              });
-              if (isQuotaErr) {
-                onFailure(new Error("Quota Error: " + errMsgs[0]), index);
-              } else {
-                if (!hasResolved) {
-                  hasResolved = true;
-                  callback({ ok: false, msg: errMsgs[0], data: cachedPrices });
-                }
-              }
-            } else {
-              onSuccess(res.data);
-            }
+          
+          db.stockMarket.currentPrices = res.data;
+          db.stockMarket.lastPricesUpdatedAt = Date.now();
+          
+          var session = C.getSession();
+          var isTeacher = session && session.role === "teacher";
+          if (isTeacher) {
+            saveDb(db);
           } else {
-            var errMsg = (res && res.error) || "시세를 불러오지 못했습니다.";
-            onFailure(new Error(errMsg), index);
+            C.hydrateDb(db);
           }
-        })
-        .catch(function(err) {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          onFailure(err, index);
-        });
-    });
+          callback({ ok: true, data: res.data });
+        } else {
+          var errMsg = (res && res.error) || "시세를 불러오지 못했습니다.";
+          callback({ ok: false, msg: errMsg, data: cachedPrices });
+        }
+      })
+      .catch(function(err) {
+        window.isFetchingStockPrices = false;
+        callback({ ok: false, msg: "서버 연결 실패: " + err.message, data: cachedPrices });
+      });
   }
 
   function buyStock(db, studentId, code, mode, amount) {
@@ -10026,12 +9952,8 @@
     totalStockVal = Math.round(totalStockVal * 100) / 100;
     var totalAssets = Math.round((cash + totalStockVal) * 100) / 100;
 
-    var gasUrl = db.stockMarket.gasUrl || "";
     var pricesFetching = window.isFetchingStockPrices === true;
     var pricesError = window.stockPricesError || null;
-    if (!gasUrl) {
-      pricesError = "GAS 프록시 URL이 등록되지 않았습니다.";
-    }
 
     var totalStockValHtml = "";
     var totalAssetsHtml = "";
@@ -10146,7 +10068,7 @@
           if (pricesFetching) {
             priceHtml = '<strong>조회 중...</strong><br/><span style="font-size:0.75rem; color:#94a3b8;">(조회 중...)</span>';
             changeText = '<span style="font-size:0.8rem; color:#94a3b8;">조회 중...</span>';
-          } else if (pricesError || !gasUrl) {
+          } else if (pricesError || window.stockPricesConfigured === false) {
             priceHtml = '<strong>설정 필요</strong><br/><span style="font-size:0.75rem; color:#ef4444;">(미연동)</span>';
             changeText = '<span style="font-size:0.8rem; color:#ef4444;">미연동</span>';
           }
@@ -10176,7 +10098,7 @@
           } else {
             if (pricesFetching) {
               profitLossStr = '<span style="font-size:0.8rem; color:#94a3b8;">계산 중...</span>';
-            } else if (pricesError || !gasUrl) {
+            } else if (pricesError || window.stockPricesConfigured === false) {
               profitLossStr = '<span style="font-size:0.8rem; color:#ef4444;">계산 불가</span>';
             }
           }
@@ -11268,6 +11190,35 @@ function buildStockMarketTeacherStocksTableRows(db) {
     var tradeLogRows = buildStockMarketTeacherTradeLogRows(db);
     var studentPortfolioRows = buildStockMarketTeacherStudentPortfolioRows(db);
 
+    var apiStatusHtml = "";
+    if (window.stockPricesConfigured === true) {
+      apiStatusHtml = 
+        '<div style="display:flex; align-items:center; gap:0.5rem; background:rgba(16,185,129,0.15); border:1px solid #10b981; padding:0.8rem; border-radius:6px; color:#a7f3d0; margin-bottom:0.5rem;">' +
+        '  <span style="font-size:1.2rem;">🟢</span>' +
+        '  <div>' +
+        '    <strong style="font-size:0.9rem;">한국투자증권(KIS) API 연동 완료</strong>' +
+        '    <div style="font-size:0.75rem; color:#6ee7b7; margin-top:0.1rem;">Express 서버에서 직접 실시간 주가를 가져옵니다. (5분 주기 자동 갱신)</div>' +
+        '  </div>' +
+        '</div>';
+    } else if (window.stockPricesConfigured === false) {
+      apiStatusHtml = 
+        '<div style="display:flex; align-items:center; gap:0.5rem; background:rgba(239,68,68,0.15); border:1px solid #ef4444; padding:0.8rem; border-radius:6px; color:#fecaca; margin-bottom:0.5rem;">' +
+        '  <span style="font-size:1.2rem;">🔴</span>' +
+        '  <div>' +
+        '    <strong style="font-size:0.9rem;">한국투자증권(KIS) API 미설정</strong>' +
+        '    <div style="font-size:0.75rem; color:#fca5a5; margin-top:0.1rem;">서버의 .env 파일에 KIS_APP_KEY 및 KIS_APP_SECRET 설정을 완료해 주세요.</div>' +
+        '  </div>' +
+        '</div>';
+    } else {
+      apiStatusHtml = 
+        '<div style="display:flex; align-items:center; gap:0.5rem; background:rgba(255,255,255,0.05); border:1px solid var(--border); padding:0.8rem; border-radius:6px; color:#94a3b8; margin-bottom:0.5rem;">' +
+        '  <span style="display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,0.3); border-radius:50%; border-top-color:#fff; animation:spin-loading 0.8s linear infinite; margin-right:4px; box-sizing:border-box;"></span>' +
+        '  <div>' +
+        '    <strong style="font-size:0.9rem;">KIS API 연동 상태 확인 중...</strong>' +
+        '  </div>' +
+        '</div>';
+    }
+
     return (
       '<div class="stock-market-teacher-root stack" style="gap:1.5rem;">' +
       '  <h2 class="panel__title" style="margin:0; font-size:1.5rem;">⚙️ 주식 모의투자 시스템 설정 및 종목 관리</h2>' +
@@ -11276,25 +11227,20 @@ function buildStockMarketTeacherStocksTableRows(db) {
       '    <section class="panel" style="flex:1; min-width:300px;">' +
       '      <h3 class="panel__title">🛠️ 시장 기본 설정</h3>' +
       '      <form id="form-stock-settings" class="stack" style="gap:1rem; margin-top:1rem;">' +
+      apiStatusHtml +
       '        <label style="display:flex; align-items:center; gap:0.5rem; background:rgba(0,0,0,0.1); padding:0.8rem; border-radius:6px; cursor:pointer;">' +
       '          <input type="checkbox" name="enabled" id="stock-setting-enabled"' + enabledChecked + ' />' +
       '          <strong>모의투자 가상 주식시장 개장 (학생 거래 활성화)</strong>' +
       '        </label>' +
-      '        <label class="field">' +
-      '          <span>한국투자증권 연동 GAS 프록시 URL 1 (기본)</span>' +
-      '          <input type="url" id="stock-setting-gasurl-1" value="' + escapeHtml(gasUrlVal1) + '" placeholder="첫 번째 계정의 GAS 웹앱 URL (기본 채널)" style="width:100%; height:2.5rem; background:rgba(0,0,0,0.2); border:1px solid var(--border); color:#fff; border-radius:4px; padding:0 0.5rem;" />' +
-      '        </label>' +
-      '        <label class="field" style="margin-top:0.3rem;">' +
-      '          <span>한국투자증권 연동 GAS 프록시 URL 2 (예비 1)</span>' +
-      '          <input type="url" id="stock-setting-gasurl-2" value="' + escapeHtml(gasUrlVal2) + '" placeholder="두 번째 계정의 GAS 웹앱 URL (한도 초과 시 폴백)" style="width:100%; height:2.5rem; background:rgba(0,0,0,0.2); border:1px solid var(--border); color:#fff; border-radius:4px; padding:0 0.5rem;" />' +
-      '        </label>' +
-      '        <label class="field" style="margin-top:0.3rem;">' +
-      '          <span>한국투자증권 연동 GAS 프록시 URL 3 (예비 2)</span>' +
-      '          <input type="url" id="stock-setting-gasurl-3" value="' + escapeHtml(gasUrlVal3) + '" placeholder="세 번째 계정의 GAS 웹앱 URL (한도 초과 시 폴백)" style="width:100%; height:2.5rem; background:rgba(0,0,0,0.2); border:1px solid var(--border); color:#fff; border-radius:4px; padding:0 0.5rem;" />' +
-      '        </label>' +
+      '        <!-- Legacy GAS URLs Hidden -->' +
+      '        <div style="display:none;">' +
+      '          <input type="url" id="stock-setting-gasurl-1" value="' + escapeHtml(gasUrlVal1) + '" />' +
+      '          <input type="url" id="stock-setting-gasurl-2" value="' + escapeHtml(gasUrlVal2) + '" />' +
+      '          <input type="url" id="stock-setting-gasurl-3" value="' + escapeHtml(gasUrlVal3) + '" />' +
+      '          <button type="button" id="btn-test-gas-connection">시세 연동 테스트</button>' +
+      '        </div>' +
       '        <div style="display:flex; gap:0.5rem;">' +
-      '          <button type="submit" class="btn btn--accent" style="flex:2; height:2.5rem;">설정 저장</button>' +
-      '          <button type="button" id="btn-test-gas-connection" class="btn btn--ghost" style="flex:1; height:2.5rem;">시세 연동 테스트</button>' +
+      '          <button type="submit" class="btn btn--accent" style="width:100%; height:2.5rem;">설정 저장</button>' +
       '        </div>' +
       '      </form>' +
       '    </section>' +
@@ -11404,7 +11350,10 @@ function buildStockMarketTeacherStocksTableRows(db) {
       window.currentStockPrices = db.stockMarket.currentPrices;
     }
     
+    var initialized = false;
     function drawPage() {
+      if (initialized) return;
+      initialized = true;
       var innerDb = getDb();
       var main = buildStockMarketTeacherHtml(innerDb);
       shell(renderTeacherChrome("모의투자 관리", "stockmarket", main));
@@ -11412,6 +11361,7 @@ function buildStockMarketTeacherStocksTableRows(db) {
       bindStockMarketTeacherEvents(innerDb);
     }
     
+    // Draw the page first with current data
     drawPage();
     
     function refreshDataOnly() {
@@ -11454,18 +11404,16 @@ function buildStockMarketTeacherStocksTableRows(db) {
       }
     }
     
-    if (db.stockMarket && db.stockMarket.gasUrl && db.stockMarket.stocks && db.stockMarket.stocks.length > 0) {
-      // 최초 1회만 캐시 한도(5분) 내에서 자동 갱신 요청
-      fetchRealtimePrices(db, function(res) {
-        if (res.ok) {
-          window.currentStockPrices = res.data;
-          refreshDataOnly();
-        } else if (res.data && Object.keys(res.data).length > 0) {
-          window.currentStockPrices = res.data;
-          refreshDataOnly();
-        }
-      });
-      
+    // Fetch KIS status and latest prices from server, then redraw to update status badge
+    fetchRealtimePrices(db, function(res) {
+      if (res.ok) {
+        window.currentStockPrices = res.data;
+      }
+      initialized = false;
+      drawPage();
+    });
+    
+    if (db.stockMarket && db.stockMarket.stocks && db.stockMarket.stocks.length > 0) {
       var lastLoggedPricesUpdatedAt = db.stockMarket.lastPricesUpdatedAt || 0;
       window.activeStockInterval = setInterval(function() {
         var pollingDb = getDb();

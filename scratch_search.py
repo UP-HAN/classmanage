@@ -7,9 +7,10 @@ file_path = r"c:\Users\onizu\OneDrive\바탕 화면\Workspace_Antigravity\학급
 with open(file_path, 'r', encoding='utf-8') as f:
     lines = f.readlines()
 
-search_terms = ["bankPayrollRequests"]
+search_terms = ["stockMarket", "prices", "gasUrl", "gas", "fetchRealtimePrices", "buildStockMarketTeacherHtml", "viewTeacherStockMarket"]
 for idx, line in enumerate(lines, 1):
     for term in search_terms:
         if term in line:
             print(f"{idx}: {line.strip()}")
             break
+

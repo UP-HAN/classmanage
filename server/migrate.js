@@ -262,7 +262,10 @@ async function main() {
     const settingsKeys = [
       'version', 'titleGrants', 'behaviorNotes', 'classJobQuotas',
       'bankPayrollRequests', 'taxCollectionRequests', 'djRequests',
-      'recyclerLogs', 'envLogs', 'hallOfFame', 'cleaningChecklistRequests'
+      'recyclerLogs', 'envLogs', 'hallOfFame', 'cleaningChecklistRequests',
+      'digitalBoard', 'statisticsChecklist', 'statisticsApprovalRequests',
+      'postmanErrandRequests', 'lastDailyExpGrowthBoardKey',
+      'classTaxTotalManual', 'classTaxTotalManualConfirmed', 'stockMarket'
     ];
 
     for (const key of settingsKeys) {

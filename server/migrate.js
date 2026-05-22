@@ -59,8 +59,8 @@ async function main() {
     if (Array.isArray(dbData.students)) {
       for (const st of dbData.students) {
         await connection.query(
-          `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom, stock_portfolio)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             st.id,
             st.name,
@@ -73,7 +73,8 @@ async function main() {
             st.classRole || '',
             st.jobId || '',
             st.avatarDataUrl || null,
-            st.avatarCustom || null
+            st.avatarCustom || null,
+            st.stockPortfolio ? JSON.stringify(st.stockPortfolio) : null
           ]
         );
       }

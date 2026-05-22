@@ -7,6 +7,21 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// === Schema Migration Safety Check ===
+async function checkAndMigrateSchema() {
+  try {
+    const [columns] = await db.query("SHOW COLUMNS FROM students LIKE 'stock_portfolio'");
+    if (columns.length === 0) {
+      console.log('[Schema Migration] students 테이블에 stock_portfolio 컬럼이 없습니다. 동적 추가를 시작합니다.');
+      await db.query("ALTER TABLE students ADD COLUMN stock_portfolio MEDIUMTEXT DEFAULT NULL");
+      console.log('[Schema Migration] students 테이블에 stock_portfolio 컬럼이 성공적으로 추가되었습니다!');
+    }
+  } catch (err) {
+    console.error('[Schema Migration] 스키마 동적 검증 및 추가 중 에러 발생:', err);
+  }
+}
+checkAndMigrateSchema();
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Allow larger payloads for avatars
 
@@ -381,7 +396,16 @@ app.get('/api/sync', async (req, res) => {
       classRole: st.class_role,
       jobId: st.job_id,
       avatarDataUrl: st.avatar_data_url,
-      avatarCustom: st.avatar_custom
+      avatarCustom: st.avatar_custom,
+      stockPortfolio: (() => {
+        if (!st.stock_portfolio) return {};
+        try {
+          return typeof st.stock_portfolio === 'string' ? JSON.parse(st.stock_portfolio) : st.stock_portfolio;
+        } catch (e) {
+          console.error(`stock_portfolio parsing error for student ${st.id}:`, e);
+          return {};
+        }
+      })()
     }));
 
     const usersList = users.map(u => ({
@@ -569,8 +593,8 @@ app.post('/api/sync', async (req, res) => {
     if (Array.isArray(dbData.students)) {
       for (const st of dbData.students) {
         await conn.query(
-          `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom, stock_portfolio)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             st.id,
             st.name,
@@ -583,7 +607,8 @@ app.post('/api/sync', async (req, res) => {
             st.classRole || '',
             st.jobId || '',
             st.avatarDataUrl || null,
-            st.avatarCustom || null
+            st.avatarCustom || null,
+            st.stockPortfolio ? JSON.stringify(st.stockPortfolio) : null
           ]
         );
       }

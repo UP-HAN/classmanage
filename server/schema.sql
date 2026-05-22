@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS students (
   class_role VARCHAR(100) DEFAULT '',
   job_id VARCHAR(50) DEFAULT '',
   avatar_data_url MEDIUMTEXT DEFAULT NULL,
-  avatar_custom MEDIUMTEXT DEFAULT NULL
+  avatar_custom MEDIUMTEXT DEFAULT NULL,
+  stock_portfolio MEDIUMTEXT DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. 사용자 계정 테이블 (users)

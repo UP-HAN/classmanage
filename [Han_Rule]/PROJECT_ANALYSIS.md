@@ -11,12 +11,12 @@
 
 | 항목 | 내용 |
 |------|------|
-| **스택** | 순수 HTML/CSS/바닐라 JS (프레임워크·빌드 도구 없음) |
-| **저장소** | `localStorage` + Firebase Firestore 실시간 동기화 |
-| **인증** | Firebase Auth (선생님: 이메일/비밀번호, 학생: 익명+PIN) |
-| **배포** | Firebase Hosting (정적 파일) |
-| **코드 규모** | `app.js` **16,026줄** (약 631KB), `app.css` **3,529줄** (약 66.5KB) |
-| **PRD 버전** | v2.7 (2026-05-21 업데이트 — 한국투자증권 실시간 연동 학급 모의투자 시스템 및 자산 차트 도입) |
+| **스택** | 순수 HTML/CSS/바닐라 JS (프레임워크·빌드 도구 없음) + Express 백엔드 (Node.js) |
+| **저장소** | `localStorage` + Express REST API / MySQL 실시간 동기화 |
+| **인증** | 자체 세션/DB 연동 로그인 (선생님/학생) |
+| **배포** | AWS Lightsail 단일 서버 (`IP: 3.35.13.249`, Nginx 및 PM2 `class-backend` 연동) |
+| **코드 규모** | `app.js` **18,708줄** (약 770KB), `app.css` **3,529줄** (약 66.5KB) |
+| **PRD 버전** | v3.0 (2026-05-22 업데이트 — 모의투자 주가 변동성 배율 및 기준가 재설정 기능 도입, AWS Lightsail 완전 통합) |
 
 ---
 
@@ -178,11 +178,11 @@
 - `fetchRealtimePrices()`: 교사가 지정한 GAS 프록시 주소로 비동기 GET 요청을 보내 등록된 종목들의 한국거래소 실시간 시세(원화 기준)를 한 번에 조회하고, `window.currentStockPrices` 전역 메모리에 실시간 캐싱하는 매커니즘.
 - `renderStudentAssetChart()`: Chart.js 라이브러리를 동적 호출하여 학생의 보유 현금(Cal) 및 보유 주식 종목의 실시간 평가금액을 합산, 원형 Doughnut 차트로 시각화하며 Chart 인스턴스를 관리 및 폐기하는 렌더링 헬퍼.
 
-### Firebase 구성
-- **Auth:** 이메일/비밀번호 (선생님) + 익명 (학생)
-- **Firestore:** `users/{uid}/classStatus/main` → `payloadJson` (전체 DB JSON)
-- **Hosting:** 정적 파일, `firebase.json`에서 `public: "."`
-- **SDK:** compat v10.7.1
+### AWS Lightsail & 백엔드 구성
+- **Express Backend:** Node.js 기반 REST API 서버, KIS OpenAPI 연동 및 데이터베이스 동기화 컨트롤
+- **Database:** MySQL Local Instance (서버 실행 시 자동 연동)
+- **Nginx Web Server:** 정적 파일 호스팅 및 Express 프록시 처리 (HTTPS 자동 인증서 탑재)
+- **PM2 Service:** `class-backend` 서비스 데몬 구동
 
 ---
 
@@ -197,7 +197,7 @@
 | `dev-feature.md` | "기능 추가" / "새 기능" | 기존 패턴에 맞춘 개발 워크플로우 |
 | `dev-bugfix.md` | "버그 수정" / "에러 수정" | 버그 추적·수정·검증 |
 | `dev-refactor.md` | "리팩토링" / "코드 정리" | 모듈 분리·구조 개선 |
-| `dev-deploy.md` | "배포" / "디플로이" | Firebase 배포 체크리스트 |
+| `dev-deploy.md` | "배포" / "디플로이" | AWS Lightsail 배포 체크리스트 |
 
 ### 📚 위키 관리 스킬 (5개)
 
@@ -208,3 +208,30 @@
 | `han-project-archiver.md` | "프로젝트 아카이빙 해줘" | 완료 프로젝트 지식 추출 |
 | `han-knowledge-extractor.md` | "대화에서 노하우 추출해 줘" | 골든 프롬프트 보존 |
 | `han-wiki-schema.md` | (상시 가동) | 위키 사서 규정 |
+
+---
+
+## 7. ⚠️ 프로젝트 개발 및 배포 룰 (중요)
+
+> 🚨 **AI 모델 개발 수칙 및 가이드라인**
+> 이 아키텍처 규칙은 학급운영도구 개발 과정에서 반드시 준수해야 하는 절대적인 규칙입니다.
+
+### 🚫 Firebase 사용 절대 금지 (폐기)
+* **Firebase Hosting, Firestore, Firebase Auth 등 모든 Firebase 연동은 완전히 중단(사용 안 함)되었습니다.**
+* 로컬의 `deploy-hosting.ps1`이나 Firebase CLI를 사용한 어떠한 배포 명령도 절대로 수행하거나 권장해서는 안 됩니다.
+
+### 🔑 SSH 실서버 접속 룰
+* **실서버(AWS Lightsail) 접속 시, 로컬 터미널을 통한 SSH PEM 키 접속 방식을 절대로 권장하거나 가이드하지 않습니다.**
+* **이유**: PEM 키 경로 입력 및 인코딩 오류, 윈도우 PowerShell의 특수 기호(`<`, `>`) ParserError 등의 빈번한 오류를 방지하기 위함입니다.
+* **접속 방법**: 무조건 **[AWS Lightsail 홈페이지 콘솔]**에 웹 브라우저로 접속한 후, 인스턴스에 있는 **주황색 터미널 아이콘(`>_`)**을 클릭하여 브라우저 콘솔을 통해서 터미널에 접속하는 방식을 지침으로 삼아야 합니다.
+
+### 🚀 실서버 배포 룰
+* 실서버 배포는 다음의 **단일 Git Pull 워크플로우**로 제한합니다:
+  1. 로컬에서 기능 개발 및 Git Push 완료.
+  2. **AWS 웹 콘솔 터미널**로 접속.
+  3. 아래 명령어를 실행하여 배포 완료:
+     ```bash
+     cd /home/ubuntu/app
+     git pull
+     pm2 restart class-backend
+     ```

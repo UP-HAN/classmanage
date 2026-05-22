@@ -1,0 +1,138 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 17px;
+  color: #eef4ff;
+  background: radial-gradient(120% 100% at 50% 0%, #1e4a78 0%, #0c1528 48%, #060d18 100%);
+  min-height: 100vh;
+}
+
+.landing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem 1.25rem;
+}
+
+.landing__main {
+  text-align: center;
+  max-width: 28rem;
+  padding: 2rem 1.75rem;
+  background: rgba(15, 35, 65, 0.45);
+  border: 1px solid rgba(120, 180, 255, 0.22);
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(5, 15, 40, 0.5);
+  backdrop-filter: blur(10px);
+}
+
+.landing__title {
+  margin: 0 0 0.75rem;
+  font-size: 1.85rem;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.03em;
+  color: #fff;
+}
+
+.landing__lead {
+  margin: 0 0 2rem;
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: #9db4d8;
+}
+
+.landing__cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14rem;
+  padding: 0.85rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #051018;
+  text-decoration: none;
+  background: linear-gradient(180deg, #7dd3ff 0%, #3aa8f0 55%, #2080c0 100%);
+  border: none;
+  border-radius: 999px;
+  box-shadow: 0 6px 24px rgba(60, 160, 240, 0.4);
+}
+
+.landing__cta:hover {
+  filter: brightness(1.06);
+}
+
+.landing__cta:focus-visible {
+  outline: 2px solid #6ee7ff;
+  outline-offset: 3px;
+}
+
+.landing__cta--full {
+  width: 100%;
+  margin-top: 0.5rem;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.login-form {
+  text-align: left;
+  max-width: 20rem;
+  margin: 0 auto 1.5rem;
+}
+
+.login-form__field {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+.login-form__label {
+  display: block;
+  font-size: 0.85rem;
+  color: #9db4d8;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+.login-form input[type="text"],
+.login-form input[type="password"] {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 180, 255, 0.25);
+  background: rgba(5, 15, 35, 0.55);
+  color: #eef4ff;
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: rgba(110, 231, 255, 0.55);
+  box-shadow: 0 0 0 3px rgba(77, 184, 255, 0.2);
+}
+
+.login-form__error {
+  margin: 0.75rem 0 0;
+  font-size: 0.88rem;
+  color: #ffb4b4;
+  text-align: center;
+}
+
+.landing__demo {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #6b86ad;
+  line-height: 1.5;
+}
+
+.landing__demo strong {
+  color: #b8d4f8;
+  font-weight: 600;
+}

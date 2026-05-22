@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="refresh" content="0; url=app/index.html" />
+  <title>학급 STATUS</title>
+  <script src="js/core.js?v=1.3.0"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      if (window.ClassStatusCore) {
+        window.ClassStatusCore.ensureDb().then(function () {
+          window.location.replace("app/index.html");
+        });
+      } else {
+        window.location.replace("app/index.html");
+      }
+    });
+  </script>
+</head>
+<body>
+  <p><a href="app/index.html">앱으로 이동</a></p>
+</body>
+</html>

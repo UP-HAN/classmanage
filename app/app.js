@@ -2944,7 +2944,7 @@
 
   function ensureStockMarket(db) {
     if (!db) return;
-    if (!db.stockMarket || typeof db.stockMarket !== "object") {
+    if (!db.stockMarket || typeof db.stockMarket !== "object" || Array.isArray(db.stockMarket)) {
       db.stockMarket = {};
     }
     if (db.stockMarket.enabled === undefined) db.stockMarket.enabled = false;

@@ -499,7 +499,7 @@ app.get('/api/sync', async (req, res) => {
     ];
 
     for (const key of settingsKeys) {
-      dbData[key] = settingsMap[key] !== undefined ? settingsMap[key] : (key === 'version' ? 1 : (key === 'classJobQuotas' ? {} : []));
+      dbData[key] = settingsMap[key] !== undefined ? settingsMap[key] : (key === 'version' ? 1 : (key === 'classJobQuotas' || key === 'stockMarket' ? {} : []));
     }
 
     if (dbData.hallOfFame === undefined || dbData.hallOfFame === null) {
@@ -766,9 +766,13 @@ app.post('/api/sync', async (req, res) => {
 
     for (const key of settingsKeys) {
       if (dbData[key] !== undefined) {
+        let valToSave = dbData[key];
+        if (key === 'stockMarket' && Array.isArray(valToSave)) {
+          valToSave = {};
+        }
         await conn.query(
           `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)`,
-          [key, JSON.stringify(dbData[key])]
+          [key, JSON.stringify(valToSave)]
         );
       }
     }
@@ -832,13 +836,14 @@ app.post('/api/sync', async (req, res) => {
 app.get('/api/stocks/prices', async (req, res) => {
   const isConfigured = !!(process.env.KIS_APP_KEY && process.env.KIS_APP_SECRET);
   
-  // If refresh query param is provided, trigger async fetch in the background
-  if (req.query.refresh === 'true') {
-    fetchStockPricesFromKIS().catch(err => console.error('[KIS API] Async refresh error:', err));
-  }
-
-  // If cache is empty and configured, try to fetch it synchronously for the first request
-  if (Object.keys(cachedStockPrices).length === 0 && isConfigured) {
+  // If refresh query param is provided, wait for the fetch to complete
+  if (req.query.refresh === 'true' && isConfigured) {
+    try {
+      await fetchStockPricesFromKIS();
+    } catch (err) {
+      console.error('[KIS API] Synchronous refresh error:', err);
+    }
+  } else if (Object.keys(cachedStockPrices).length === 0 && isConfigured) {
     try {
       await fetchStockPricesFromKIS();
     } catch (e) {

@@ -270,10 +270,14 @@ async function main() {
 
     for (const key of settingsKeys) {
       if (dbData[key] !== undefined) {
+        let valToSave = dbData[key];
+        if (key === 'stockMarket' && Array.isArray(valToSave)) {
+          valToSave = {};
+        }
         await connection.query(
           `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)
            ON DUPLICATE KEY UPDATE \`value\` = ?`,
-          [key, JSON.stringify(dbData[key]), JSON.stringify(dbData[key])]
+          [key, JSON.stringify(valToSave), JSON.stringify(valToSave)]
         );
       }
     }

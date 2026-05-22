@@ -177,14 +177,16 @@ async function fetchStockPricesFromKIS() {
         const resJson = await response.json();
         if (resJson && resJson.output) {
           const priceVal = parseInt(resJson.output.stck_prpr, 10);
+          const sdprVal = parseInt(resJson.output.stck_sdpr, 10);
           if (!isNaN(priceVal)) {
             cachedStockPrices[code] = {
               code: code,
               price: priceVal,
+              stck_sdpr: !isNaN(sdprVal) ? sdprVal : priceVal,
               name: resJson.output.hts_kor_shr_nme || stock.name || '',
               updatedAt: Date.now()
             };
-            console.log(`[KIS API] Updated stock ${code} (${stock.name}): ${priceVal} KRW`);
+            console.log(`[KIS API] Updated stock ${code} (${stock.name}): ${priceVal} KRW, SDPR: ${!isNaN(sdprVal) ? sdprVal : priceVal} KRW`);
           } else {
             console.warn(`[KIS API] Unexpected price format for stock ${code}: ${JSON.stringify(resJson.output)}`);
           }

@@ -2971,6 +2971,72 @@
     if (typeof db.stockMarket.lastPricesUpdatedAt !== "number") {
       db.stockMarket.lastPricesUpdatedAt = 0;
     }
+    if (db.stockMarket.multiplier === undefined) {
+      db.stockMarket.multiplier = 1;
+    }
+    if (!db.stockMarket.rawPrices || typeof db.stockMarket.rawPrices !== "object") {
+      db.stockMarket.rawPrices = {};
+    }
+  }
+
+  function getLeveragedPrices(db, rawPrices) {
+    ensureStockMarket(db);
+    var mult = typeof db.stockMarket.multiplier === "number" ? db.stockMarket.multiplier : 1;
+    var leveraged = {};
+    var stocks = db.stockMarket.stocks || [];
+    var basePriceUpdated = false;
+    
+    var i;
+    for (i = 0; i < stocks.length; i++) {
+      var stock = stocks[i];
+      var code = stock.code;
+      if (!code) continue;
+      
+      var rawItem = rawPrices && rawPrices[code];
+      if (!rawItem || typeof rawItem.price !== "number") continue;
+      
+      // Initialize basePrice if not set
+      if (stock.basePrice === undefined || stock.basePrice === null) {
+        // Use stck_sdpr (previous day close) from server if available, otherwise raw current price
+        stock.basePrice = rawItem.stck_sdpr || rawItem.price;
+        basePriceUpdated = true;
+      }
+      
+      var pBase = stock.basePrice;
+      var pReal = rawItem.price;
+      var pDisplay = Math.max(100, Math.round(pBase + (pReal - pBase) * mult));
+      
+      var changePrice = pDisplay - pBase;
+      var changeRate = pBase > 0 ? ((changePrice / pBase) * 100).toFixed(2) : "0.00";
+      var compareSign = "3";
+      if (changePrice > 0) {
+        compareSign = "2"; // Rise
+      } else if (changePrice < 0) {
+        compareSign = "5"; // Fall
+      }
+      
+      leveraged[code] = {
+        code: code,
+        price: pDisplay,
+        name: rawItem.name || stock.name,
+        changePrice: Math.abs(changePrice),
+        changeRate: changeRate,
+        compareSign: compareSign,
+        updatedAt: rawItem.updatedAt || Date.now()
+      };
+    }
+    
+    if (basePriceUpdated) {
+      var session = C.getSession();
+      var isTeacher = session && session.role === "teacher";
+      if (isTeacher) {
+        saveDb(db);
+      } else {
+        C.hydrateDb(db);
+      }
+    }
+    
+    return leveraged;
   }
 
   function ensureStudentStockPortfolio(st) {
@@ -2997,7 +3063,10 @@
     
     // forceRefresh가 아니고, 마지막 성공 업데이트가 5분(300,000ms) 이내인 경우 캐시 데이터 반환
     if (forceRefresh !== true && lastUpdate > 0 && (now - lastUpdate) < 300000 && Object.keys(cachedPrices).length > 0) {
-      return callback({ ok: true, data: cachedPrices, cached: true });
+      if (db.stockMarket.rawPrices && Object.keys(db.stockMarket.rawPrices).length > 0) {
+        db.stockMarket.currentPrices = getLeveragedPrices(db, db.stockMarket.rawPrices);
+      }
+      return callback({ ok: true, data: db.stockMarket.currentPrices, cached: true });
     }
     
     // Express 백엔드 API URL 구성
@@ -3026,7 +3095,10 @@
             console.warn("한국투자증권 API 키가 Express 서버에 등록되지 않았습니다.");
           }
           
-          db.stockMarket.currentPrices = res.data;
+          db.stockMarket.rawPrices = res.data;
+          
+          var leveraged = getLeveragedPrices(db, res.data);
+          db.stockMarket.currentPrices = leveraged;
           db.stockMarket.lastPricesUpdatedAt = Date.now();
           
           var session = C.getSession();
@@ -3036,7 +3108,7 @@
           } else {
             C.hydrateDb(db);
           }
-          callback({ ok: true, data: res.data });
+          callback({ ok: true, data: leveraged });
         } else {
           var errMsg = (res && res.error) || "시세를 불러오지 못했습니다.";
           callback({ ok: false, msg: errMsg, data: cachedPrices });
@@ -11232,6 +11304,23 @@ function buildStockMarketTeacherStocksTableRows(db) {
       '          <input type="checkbox" name="enabled" id="stock-setting-enabled"' + enabledChecked + ' />' +
       '          <strong>모의투자 가상 주식시장 개장 (학생 거래 활성화)</strong>' +
       '        </label>' +
+      '        <label class="field">' +
+      '          <span>주가 변동성 배율 (레버리지)</span>' +
+      '          <select id="stock-setting-multiplier" style="width:100%; height:2.5rem; background:rgba(0,0,0,0.2); border:1px solid var(--border); color:#fff; border-radius:4px; padding:0 0.5rem;">' +
+      '            <option value="1"' + (db.stockMarket.multiplier === 1 ? ' selected' : '') + '>1배 (실제 주가와 동일)</option>' +
+      '            <option value="1.5"' + (db.stockMarket.multiplier === 1.5 ? ' selected' : '') + '>1.5배</option>' +
+      '            <option value="2"' + (db.stockMarket.multiplier === 2 ? ' selected' : '') + '>2배 (변동폭 2배 확대)</option>' +
+      '            <option value="3"' + (db.stockMarket.multiplier === 3 ? ' selected' : '') + '>3배 (변동폭 3배 확대)</option>' +
+      '            <option value="5"' + (db.stockMarket.multiplier === 5 ? ' selected' : '') + '>5배 (변동폭 5배 극대화)</option>' +
+      '          </select>' +
+      '        </label>' +
+      '        <div style="background:rgba(255,255,255,0.02); border:1px dashed var(--border); padding:0.8rem; border-radius:6px; font-size:0.85rem;">' +
+      '          <div style="margin-bottom:0.5rem; color:#94a3b8;">' +
+      '            💡 <strong>변동성 배율</strong>은 기준가 대비 등락폭을 배가하여 아이들이 더 드라마틱하게 주가 변동을 느끼도록 돕습니다.<br/>' +
+      '            (수식: 표시주가 = 기준가 + (실제주가 - 기준가) * 배율)' +
+      '          </div>' +
+      '          <button type="button" id="btn-reset-stock-base" class="btn btn--secondary" style="height:2.2rem; font-size:0.8rem; width:100%;">⚙️ 모든 종목의 기준가를 현재가로 재설정</button>' +
+      '        </div>' +
       '        <!-- Legacy GAS URLs Hidden -->' +
       '        <div style="display:none;">' +
       '          <input type="url" id="stock-setting-gasurl-1" value="' + escapeHtml(gasUrlVal1) + '" />' +
@@ -11445,11 +11534,14 @@ function buildStockMarketTeacherStocksTableRows(db) {
       settingsForm.addEventListener("submit", function(e) {
         e.preventDefault();
         var enabled = document.getElementById("stock-setting-enabled").checked;
+        var multiplier = parseFloat(document.getElementById("stock-setting-multiplier").value);
+        if (isNaN(multiplier)) multiplier = 1;
         var gasUrl1 = document.getElementById("stock-setting-gasurl-1").value.trim();
         var gasUrl2 = document.getElementById("stock-setting-gasurl-2").value.trim();
         var gasUrl3 = document.getElementById("stock-setting-gasurl-3").value.trim();
         
         db.stockMarket.enabled = enabled;
+        db.stockMarket.multiplier = multiplier;
         db.stockMarket.gasUrls = [gasUrl1, gasUrl2, gasUrl3];
         // 하위 호환성을 위해 단일 gasUrl도 첫 번째 유효 URL로 채워둠
         db.stockMarket.gasUrl = gasUrl1 || gasUrl2 || gasUrl3 || "";
@@ -11457,6 +11549,39 @@ function buildStockMarketTeacherStocksTableRows(db) {
         saveDb(db);
         alert("설정이 저장되었습니다.");
         viewTeacherStockMarket();
+      });
+    }
+
+    var resetBaseBtn = document.getElementById("btn-reset-stock-base");
+    if (resetBaseBtn) {
+      resetBaseBtn.addEventListener("click", function() {
+        if (!confirm("모든 종목의 기준 가격을 현재 시세로 재설정하시겠습니까?\n이후 발생하는 등락폭은 현재 가격을 기준으로 증폭되어 계산됩니다.")) return;
+        
+        var actionDb = getDb();
+        if (Array.isArray(actionDb.stockMarket.stocks)) {
+          var sIdx;
+          for (sIdx = 0; sIdx < actionDb.stockMarket.stocks.length; sIdx++) {
+            actionDb.stockMarket.stocks[sIdx].basePrice = undefined;
+          }
+        }
+        
+        resetBaseBtn.disabled = true;
+        var originalText = resetBaseBtn.innerHTML;
+        resetBaseBtn.innerHTML = "⏳ 기준가 재설정 중...";
+        
+        saveDb(actionDb);
+        
+        fetchRealtimePrices(actionDb, function(res) {
+          resetBaseBtn.disabled = false;
+          resetBaseBtn.innerHTML = originalText;
+          if (res.ok) {
+            alert("기준 가격이 성공적으로 재설정되었습니다!");
+            viewTeacherStockMarket();
+          } else {
+            alert("기준 가격 재설정 중 시세 갱신 실패: " + res.msg);
+            viewTeacherStockMarket();
+          }
+        }, true);
       });
     }
     
@@ -11606,16 +11731,20 @@ function buildStockMarketTeacherStocksTableRows(db) {
         
         // 시세 갱신 전, 입력 폼에 적혀있는 최신 설정을 DB에 즉시 자동 저장
         var enabledEl = document.getElementById("stock-setting-enabled");
+        var multiplierEl = document.getElementById("stock-setting-multiplier");
         var gasUrl1El = document.getElementById("stock-setting-gasurl-1");
         var gasUrl2El = document.getElementById("stock-setting-gasurl-2");
         var gasUrl3El = document.getElementById("stock-setting-gasurl-3");
         if (gasUrl1El) {
           var enabled = enabledEl ? enabledEl.checked : false;
+          var multiplier = multiplierEl ? parseFloat(multiplierEl.value) : 1;
+          if (isNaN(multiplier)) multiplier = 1;
           var gasUrl1 = gasUrl1El.value.trim();
           var gasUrl2 = gasUrl2El ? gasUrl2El.value.trim() : "";
           var gasUrl3 = gasUrl3El ? gasUrl3El.value.trim() : "";
           
           actionDb.stockMarket.enabled = enabled;
+          actionDb.stockMarket.multiplier = multiplier;
           actionDb.stockMarket.gasUrls = [gasUrl1, gasUrl2, gasUrl3];
           actionDb.stockMarket.gasUrl = gasUrl1 || gasUrl2 || gasUrl3 || "";
           saveDb(actionDb);

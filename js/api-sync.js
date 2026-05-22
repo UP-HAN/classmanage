@@ -1,7 +1,7 @@
 (function (global) {
   var serverConfig = {
     enabled: true,
-    apiUrl: "http://localhost:3000"
+    apiUrl: "https://class.ches.es.kr"
   };
   global.ClassStatusServerConfig = serverConfig;
 

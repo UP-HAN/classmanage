@@ -33,6 +33,12 @@
     options.headers = options.headers || {};
     options.headers["Content-Type"] = "application/json";
     
+    // Inject selected class year from local storage if set
+    var selectedYear = localStorage.getItem("currentClassYear");
+    if (selectedYear) {
+      options.headers["X-Class-Year"] = selectedYear;
+    }
+    
     return fetch(url, options).then(function (res) {
       if (!res.ok) {
         return res.json().then(function (err) {
@@ -109,13 +115,37 @@
     }
   }
 
+  function getYearsList() {
+    if (!isServerCloudEnabled()) return Promise.resolve({ ok: false, years: [], activeYear: null });
+    return fetchFromApi("/api/years");
+  }
+
+  function createYear(year) {
+    if (!isServerCloudEnabled()) return Promise.reject(new Error("Cloud server not enabled"));
+    return fetchFromApi("/api/years", {
+      method: "POST",
+      body: JSON.stringify({ year: year })
+    });
+  }
+
+  function setActiveYear(year) {
+    if (!isServerCloudEnabled()) return Promise.reject(new Error("Cloud server not enabled"));
+    return fetchFromApi("/api/years/active", {
+      method: "POST",
+      body: JSON.stringify({ year: year })
+    });
+  }
+
   global.ClassStatusServer = {
     isServerCloudEnabled: isServerCloudEnabled,
     login: login,
     uploadAvatar: uploadAvatar,
     syncStudentsFromRemote: syncStudentsFromRemote,
     afterLocalSave: afterLocalSave,
-    isSyncEnabled: isSyncActive
+    isSyncEnabled: isSyncActive,
+    getYearsList: getYearsList,
+    createYear: createYear,
+    setActiveYear: setActiveYear
   };
 })(typeof window !== "undefined" ? window : this);
 

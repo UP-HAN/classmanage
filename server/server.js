@@ -8,6 +8,37 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// === Active Year State Management ===
+let globalActiveYear = null;
+
+async function loadActiveYear() {
+  try {
+    const defaultPool = db.getPool(db.defaultDbName);
+    // Ensure settings table exists (in case base db is completely empty)
+    await defaultPool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        \`key\` VARCHAR(100) PRIMARY KEY,
+        \`value\` JSON NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    
+    const [rows] = await defaultPool.query("SELECT `value` FROM settings WHERE `key` = 'activeYear'");
+    if (rows.length > 0) {
+      let val = rows[0].value;
+      if (typeof val === 'string') {
+        try { val = JSON.parse(val); } catch (e) {}
+      }
+      globalActiveYear = val;
+      console.log(`[Startup] Loaded globally active year: ${globalActiveYear}`);
+    } else {
+      console.log(`[Startup] No globally active year set. Defaulting to base database.`);
+    }
+  } catch (err) {
+    console.error(`[Startup] Failed to load active year:`, err);
+  }
+}
+loadActiveYear();
+
 // === Schema Migration Safety Check ===
 async function checkAndMigrateSchema() {
   try {
@@ -25,6 +56,21 @@ checkAndMigrateSchema();
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Allow larger payloads for avatars
+
+// DB Year selection middleware
+app.use((req, res, next) => {
+  const classYear = req.headers['x-class-year'];
+  let dbName = db.defaultDbName;
+  if (classYear && /^\d{4}$/.test(classYear)) {
+    dbName = `class_tool_${classYear}`;
+  } else if (globalActiveYear && /^\d{4}$/.test(globalActiveYear)) {
+    dbName = `class_tool_${globalActiveYear}`;
+  }
+  
+  db.asyncLocalStorage.run({ dbName }, () => {
+    next();
+  });
+});
 
 // SHA-256 hash matching the browser client core.js hash implementation
 function hashPassword(password, salt) {
@@ -115,28 +161,41 @@ async function fetchStockPricesFromKIS() {
       return;
     }
 
-    // Query active stocks from database settings
-    const [settings] = await db.query('SELECT `value` FROM settings WHERE `key` = ?', ['stockMarket']);
-    if (settings.length === 0) {
-      console.log('[KIS API] No stockMarket settings found in database.');
-      isFetchingPrices = false;
-      return;
+    // 1. Get all year databases matching class_tool_% plus the default class_tool
+    const [rows] = await db.getPool(db.defaultDbName).query('SHOW DATABASES');
+    const databases = rows
+      .map(r => r.Database || r.database)
+      .filter(name => name === db.defaultDbName || name.startsWith('class_tool_'));
+
+    // 2. Collect all active stock codes from all databases
+    const allStockCodes = new Set();
+    const stockCodeToName = {};
+
+    for (const dbName of databases) {
+      try {
+        const pool = db.getPool(dbName);
+        const [settings] = await pool.query('SELECT `value` FROM settings WHERE `key` = ?', ['stockMarket']);
+        if (settings.length > 0) {
+          let stockMarket = settings[0].value;
+          if (typeof stockMarket === 'string') {
+            try { stockMarket = JSON.parse(stockMarket); } catch (e) {}
+          }
+          if (stockMarket && stockMarket.enabled && Array.isArray(stockMarket.stocks)) {
+            for (const stock of stockMarket.stocks) {
+              if (stock.code) {
+                allStockCodes.add(stock.code);
+                stockCodeToName[stock.code] = stock.name || '';
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[KIS API] Failed to fetch stock market settings from database ${dbName}:`, err);
+      }
     }
 
-    let stockMarket = settings[0].value;
-    if (typeof stockMarket === 'string') {
-      try { stockMarket = JSON.parse(stockMarket); } catch (e) {}
-    }
-
-    if (!stockMarket || !stockMarket.enabled) {
-      console.log('[KIS API] Stock market is disabled. Skipping price fetch.');
-      isFetchingPrices = false;
-      return;
-    }
-
-    const stocks = stockMarket.stocks || [];
-    if (stocks.length === 0) {
-      console.log('[KIS API] No active stocks configured.');
+    if (allStockCodes.size === 0) {
+      console.log('[KIS API] No active stocks configured in any database.');
       isFetchingPrices = false;
       return;
     }
@@ -146,12 +205,12 @@ async function fetchStockPricesFromKIS() {
       ? 'https://openapivts.koreainvestment.com:29443'
       : 'https://openapi.koreainvestment.com:9443';
 
-    console.log(`[KIS API] Fetching prices for ${stocks.length} stocks sequentially (Mock env: ${isMock})...`);
+    console.log(`[KIS API] Fetching prices for ${allStockCodes.size} stocks sequentially (Mock env: ${isMock})...`);
 
-    for (let i = 0; i < stocks.length; i++) {
-      const stock = stocks[i];
-      const code = stock.code;
-      if (!code) continue;
+    const codes = Array.from(allStockCodes);
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      const stockName = stockCodeToName[code];
 
       const url = `${baseUrl}/uapi/domestic-stock/v1/quotations/inquire-price?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}`;
       const headers = {
@@ -186,7 +245,7 @@ async function fetchStockPricesFromKIS() {
         }
 
         if (!response || !response.ok) {
-          console.error(`[KIS API] Price fetch failed for stock ${code} (${stock.name}): ${lastError}`);
+          console.error(`[KIS API] Price fetch failed for stock ${code} (${stockName}): ${lastError}`);
           continue;
         }
 
@@ -199,10 +258,10 @@ async function fetchStockPricesFromKIS() {
               code: code,
               price: priceVal,
               stck_sdpr: !isNaN(sdprVal) ? sdprVal : priceVal,
-              name: resJson.output.hts_kor_shr_nme || stock.name || '',
+              name: resJson.output.hts_kor_shr_nme || stockName || '',
               updatedAt: Date.now()
             };
-            console.log(`[KIS API] Updated stock ${code} (${stock.name}): ${priceVal} KRW, SDPR: ${!isNaN(sdprVal) ? sdprVal : priceVal} KRW`);
+            console.log(`[KIS API] Updated stock ${code} (${stockName}): ${priceVal} KRW, SDPR: ${!isNaN(sdprVal) ? sdprVal : priceVal} KRW`);
           } else {
             console.warn(`[KIS API] Unexpected price format for stock ${code}: ${JSON.stringify(resJson.output)}`);
           }
@@ -214,7 +273,7 @@ async function fetchStockPricesFromKIS() {
       }
 
       // If in Mock mode, strictly sleep 1.2s to comply with the 2 requests/sec limit
-      if (isMock && i < stocks.length - 1) {
+      if (isMock && i < codes.length - 1) {
         await sleep(1200);
       }
     }
@@ -884,6 +943,151 @@ app.get('/api/stocks/prices', async (req, res) => {
     isConfigured,
     data: cachedStockPrices
   });
+});
+
+// === Class Year Management APIs ===
+
+// 1. GET /api/years - List all class years and the current active year
+app.get('/api/years', async (req, res) => {
+  try {
+    const [rows] = await db.query('SHOW DATABASES');
+    const databases = rows.map(r => r.Database || r.database || '');
+    
+    const years = [];
+    for (const dbName of databases) {
+      const match = dbName.match(/^class_tool_(\d{4})$/);
+      if (match) {
+        years.push(match[1]);
+      }
+    }
+    
+    // Sort descending
+    years.sort((a, b) => b.localeCompare(a));
+    
+    return res.json({
+      ok: true,
+      years,
+      activeYear: globalActiveYear
+    });
+  } catch (error) {
+    console.error('학년도 목록 조회 에러:', error);
+    return res.status(500).json({ ok: false, msg: '학년도 목록을 조회하는 중 오류가 발생했습니다.' });
+  }
+});
+
+// 2. POST /api/years - Create a new year database and migrate schema + teacher accounts
+app.post('/api/years', async (req, res) => {
+  const { year } = req.body;
+  if (!year || !/^\d{4}$/.test(year)) {
+    return res.status(400).json({ ok: false, msg: '올바른 학년도(4자리 숫자, 예: 2027)를 입력해 주세요.' });
+  }
+
+  const newDbName = `class_tool_${year}`;
+  
+  try {
+    const [dbs] = await db.query('SHOW DATABASES');
+    const exists = dbs.some(r => (r.Database || r.database || '') === newDbName);
+    if (exists) {
+      return res.status(400).json({ ok: false, msg: `${year}학년도 학급이 이미 존재합니다.` });
+    }
+
+    console.log(`[API] Creating new year database: ${newDbName}`);
+    await db.query(`CREATE DATABASE \`${newDbName}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+
+    const newPool = db.getPool(newDbName);
+    const conn = await newPool.getConnection();
+
+    try {
+      const fs = require('fs');
+      const schemaPath = path.join(__dirname, 'schema.sql');
+      const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+
+      // Clean SQL comments and split by semicolon
+      const cleanSql = schemaSql
+        .replace(/--.*$/gm, '') // Remove single line comments
+        .replace(/\/\*[\s\S]*?\*\//g, ''); // Remove block comments
+
+      const statements = cleanSql
+        .split(';')
+        .map(stmt => stmt.trim())
+        .filter(stmt => {
+          if (!stmt) return false;
+          const lower = stmt.toLowerCase();
+          return !lower.startsWith('drop database') && 
+                 !lower.startsWith('create database') && 
+                 !lower.startsWith('use ');
+        });
+
+      await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+      for (const statement of statements) {
+        await conn.query(statement);
+      }
+      await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+      console.log(`[API] Schema migration completed for ${newDbName}`);
+
+      // Copy teacher/admin accounts from the default/current database to the new database
+      const [teachers] = await db.query("SELECT * FROM users WHERE role = 'teacher' OR role = 'admin'");
+      if (teachers.length > 0) {
+        for (const t of teachers) {
+          await conn.query(
+            `INSERT INTO users (id, login_id, password_hash, salt, role, display_name, pin_code, pin_must_change, student_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [t.id, t.login_id, t.password_hash, t.salt, t.role, t.display_name, t.pin_code, t.pin_must_change, null]
+          );
+        }
+        console.log(`[API] Copied ${teachers.length} teacher/admin account(s) to ${newDbName}`);
+      } else {
+        const defaultSalt = crypto.randomBytes(16).toString('hex');
+        const defaultHash = hashPassword('1234', defaultSalt);
+        await conn.query(
+          `INSERT INTO users (id, login_id, password_hash, salt, role, display_name, pin_code, pin_must_change, student_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ['teacher-id', 'teacher', defaultHash, defaultSalt, 'teacher', '선생님', null, 0, null]
+        );
+        console.log(`[API] Created default teacher account in ${newDbName}`);
+      }
+
+    } finally {
+      conn.release();
+    }
+
+    return res.json({ ok: true, msg: `${year}학년도 학급이 성공적으로 생성되었습니다.` });
+  } catch (error) {
+    console.error('학년도 생성 에러:', error);
+    return res.status(500).json({ ok: false, msg: '학년도 학급을 생성하는 중 오류가 발생했습니다.' });
+  }
+});
+
+// 3. POST /api/years/active - Set the globally active year
+app.post('/api/years/active', async (req, res) => {
+  const { year } = req.body;
+  if (!year || !/^\d{4}$/.test(year)) {
+    return res.status(400).json({ ok: false, msg: '올바른 학년도를 입력해 주세요.' });
+  }
+
+  const dbName = `class_tool_${year}`;
+  try {
+    const [dbs] = await db.query('SHOW DATABASES');
+    const exists = dbs.some(r => (r.Database || r.database || '') === dbName);
+    if (!exists) {
+      return res.status(400).json({ ok: false, msg: `${year}학년도 학급이 존재하지 않습니다.` });
+    }
+
+    const defaultPool = db.getPool(db.defaultDbName);
+    await defaultPool.query(
+      `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE \`value\` = ?`,
+      ['activeYear', JSON.stringify(year), JSON.stringify(year)]
+    );
+
+    globalActiveYear = year;
+    console.log(`[API] Globally active year set to: ${globalActiveYear}`);
+
+    return res.json({ ok: true, msg: `활성화 학년도가 ${year}년으로 변경되었습니다.` });
+  } catch (error) {
+    console.error('활성화 학년도 설정 에러:', error);
+    return res.status(500).json({ ok: false, msg: '활성화 학년도를 설정하는 중 오류가 발생했습니다.' });
+  }
 });
 
 // Health check API

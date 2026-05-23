@@ -6895,6 +6895,37 @@
       '">DJ 신청곡 목록</a>' +
       "</div></div>";
 
+    var years = window.classYears || [];
+    var selectedYear = localStorage.getItem("currentClassYear") || window.activeClassYear || "";
+    
+    var yearSelectHtml = "";
+    if (years.length > 0) {
+      yearSelectHtml += '<select id="header-class-year-select" style="padding: 0.35rem 1.8rem 0.35rem 0.75rem; font-size: 0.9rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.15) url(\'data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23ffffff%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E\') no-repeat right 0.75rem center/8px 10px; -webkit-appearance: none; -moz-appearance: none; appearance: none; color: white; cursor: pointer; font-weight: bold; margin-right: 0.5rem; outline: none; transition: all 0.2s;">';
+      
+      for (var yi = 0; yi < years.length; yi++) {
+        var yVal = years[yi];
+        var isSel = yVal === selectedYear ? " selected" : "";
+        var isAct = yVal === window.activeClassYear ? " (현재 활성)" : "";
+        yearSelectHtml += '<option value="' + yVal + '"' + isSel + ' style="color: #333; font-weight: normal;">' + yVal + '학년도' + isAct + '</option>';
+      }
+      yearSelectHtml += '</select>';
+    }
+
+    var yearManageBtns = '';
+    if (years.length > 0) {
+      if (selectedYear && selectedYear !== window.activeClassYear) {
+        yearManageBtns += '<button type="button" class="btn btn--accent btn--iconish" id="btn-activate-selected-year" title="이 학년도를 모든 학생들의 기본 접속 학년도로 설정합니다" style="margin-right: 0.5rem; font-size: 0.85rem; padding: 0.35rem 0.75rem;">기본 학년도로 지정</button>';
+      }
+    }
+    yearManageBtns += '<button type="button" class="btn btn--ghost btn--iconish" id="btn-create-new-year" title="새 학년도 학급 추가" style="font-size: 0.85rem; padding: 0.35rem 0.75rem; border: 1px dashed rgba(255,255,255,0.4);"><span style="margin-right: 2px;">+</span>새 학년도</button>';
+
+    var headerYearManageHtml = 
+      '<div class="header-year-control" style="display: flex; align-items: center; background: rgba(0,0,0,0.15); padding: 0.35rem 0.5rem; border-radius: 8px; margin-right: 1rem; border: 1px solid rgba(255,255,255,0.08);">' +
+      '<span style="font-size: 0.85rem; color: rgba(255,255,255,0.7); margin-right: 0.5rem; font-weight: bold;">학급 선택:</span>' +
+      yearSelectHtml +
+      yearManageBtns +
+      '</div>';
+
     return (
       '<header class="app-header">' +
       '<div class="app-header__lead">' +
@@ -6903,6 +6934,7 @@
       escapeHtml(title) +
       "</h1></div>" +
       '<div class="app-header__actions">' +
+      headerYearManageHtml +
       studentModeBtn +
       '<a class="btn btn--ghost btn--iconish" href="../index.html" id="btn-logout" title="로그아웃">로그아웃</a>' +
       "</div></header>" +
@@ -7213,6 +7245,114 @@
     return links;
   }
 
+  function showCreateYearModal() {
+    var oldModal = document.getElementById("create-year-modal");
+    if (oldModal) oldModal.remove();
+
+    var modalHtml = 
+      '<div id="create-year-modal" class="board-modal" style="display: flex; align-items: center; justify-content: center; z-index: 10000; position: fixed; top: 0; left: 0; width: 100%; height: 100%;">' +
+      '<div class="board-modal__backdrop" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);"></div>' +
+      '<div class="board-modal__dialog" role="dialog" aria-modal="true" style="position: relative; background: #ffffff; border-radius: 12px; max-width: 450px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04); overflow: hidden; animation: modalFadeIn 0.3s ease-out; border: 1px solid rgba(0,0,0,0.05);">' +
+      '<div class="board-modal__head" style="padding: 1.25rem 1.5rem; border-bottom: 1px solid #f3f4f6; display: flex; justify-content: space-between; align-items: center; background: #fafafa;">' +
+      '<h3 class="board-modal__title" style="margin: 0; font-size: 1.2rem; font-weight: bold; color: #1f2937; display: flex; align-items: center; gap: 0.5rem;"><span style="font-size: 1.3rem;">🌱</span>새 학년도 학급 생성</h3>' +
+      '<button type="button" class="board-modal__close" id="create-year-modal-close" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #9ca3af; line-height: 1;">&times;</button>' +
+      '</div>' +
+      '<div style="padding: 1.5rem;">' +
+      '<form id="form-create-year" class="stack" style="display: flex; flex-direction: column; gap: 1.25rem;">' +
+      '<p style="margin: 0; font-size: 0.9rem; color: #4b5563; line-height: 1.5;">' +
+      '학년도별로 데이터를 완벽하게 분리하여 새로운 학급을 생성합니다.<br>' +
+      '<span style="color: #6b7280; font-size: 0.85rem;">(선생님 계정 정보는 새 데이터베이스에 자동으로 복사됩니다.)</span>' +
+      '</p>' +
+      '<label class="field" style="display: flex; flex-direction: column; gap: 0.5rem; font-weight: bold; color: #374151; font-size: 0.95rem;">' +
+      '생성할 학년도 (예: 2027)' +
+      '<input type="number" name="newYear" required min="2020" max="2100" value="' + (new Date().getFullYear() + 1) + '" style="padding: 0.65rem 0.75rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1.1rem; text-align: center; font-weight: bold; width: 100%; box-sizing: border-box;" />' +
+      '</label>' +
+      '<p id="create-year-error" style="color: #ef4444; font-size: 0.85rem; margin: 0;" hidden></p>' +
+      '<div style="display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid #f3f4f6; padding-top: 1rem; margin-top: 0.5rem;">' +
+      '<button type="button" class="btn btn--ghost" id="create-year-modal-cancel" style="padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer;">취소</button>' +
+      '<button type="submit" class="btn btn--primary" style="padding: 0.5rem 1.25rem; border-radius: 6px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); border: none; color: white; font-weight: bold; cursor: pointer;">생성하기</button>' +
+      '</div>' +
+      '</form>' +
+      '</div>' +
+      '</div>' +
+      '</div>';
+
+    if (!document.getElementById("modal-anim-style")) {
+      var style = document.createElement("style");
+      style.id = "modal-anim-style";
+      style.innerHTML = "@keyframes modalFadeIn { from { opacity: 0; transform: scale(0.95) translateY(-10px); } to { opacity: 1; transform: scale(1) translateY(0); } }";
+      document.head.appendChild(style);
+    }
+
+    var div = document.createElement("div");
+    div.innerHTML = modalHtml;
+    var modalEl = div.firstChild;
+    document.body.appendChild(modalEl);
+
+    function closeModal() {
+      modalEl.remove();
+    }
+    document.getElementById("create-year-modal-close").addEventListener("click", closeModal);
+    document.getElementById("create-year-modal-cancel").addEventListener("click", closeModal);
+    modalEl.querySelector(".board-modal__backdrop").addEventListener("click", closeModal);
+
+    document.getElementById("form-create-year").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var newYearVal = this.elements.newYear.value;
+      if (!newYearVal || !/^\d{4}$/.test(newYearVal)) {
+        var err = document.getElementById("create-year-error");
+        err.textContent = "올바른 학년도(4자리 숫자)를 입력해 주세요.";
+        err.hidden = false;
+        return;
+      }
+
+      var submitBtn = this.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      submitBtn.textContent = "생성 중...";
+
+      window.ClassStatusServer.createYear(newYearVal)
+        .then(function (data) {
+          if (data.ok) {
+            alert(newYearVal + "학년도 학급이 생성되었습니다! 새 학년도를 활성화하거나 선택하여 사용할 수 있습니다.");
+            closeModal();
+            window.ClassStatusServer.getYearsList().then(function (res) {
+              if (res.ok) {
+                window.classYears = res.years || [];
+                window.activeClassYear = res.activeYear || "";
+                route();
+              }
+            });
+          }
+        })
+        .catch(function (err) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "생성하기";
+          var errEl = document.getElementById("create-year-error");
+          errEl.textContent = err.message || "학년도 생성 중 에러가 발생했습니다.";
+          errEl.hidden = false;
+        });
+    });
+  }
+
+  function handleActivateSelectedYear() {
+    var selectedYear = localStorage.getItem("currentClassYear");
+    if (!selectedYear) return;
+
+    if (confirm(selectedYear + "학년도를 학생들의 기본 접속 학년도로 활성화하시겠습니까? 학생들은 로그인 시 자동으로 이 학년도의 학급 데이터에 접근하게 됩니다.")) {
+      window.ClassStatusServer.setActiveYear(selectedYear)
+        .then(function (data) {
+          if (data.ok) {
+            alert(selectedYear + "학년도가 기본 학년도로 성공적으로 지정되었습니다.");
+            window.activeClassYear = selectedYear;
+            route();
+          }
+        })
+        .catch(function (err) {
+          alert("활성화 중 오류가 발생했습니다: " + err.message);
+        });
+    }
+  }
+
   function bindLogout() {
     var b = document.getElementById("btn-logout");
     if (b) {
@@ -7258,6 +7398,35 @@
         } else {
           alert("팝업이 차단되었습니다. 브라우저에서 이 사이트의 팝업을 허용한 뒤 다시 시도해 주세요.");
         }
+      });
+    }
+
+    var yearSelect = document.getElementById("header-class-year-select");
+    if (yearSelect) {
+      yearSelect.addEventListener("change", function () {
+        var newYear = this.value;
+        if (newYear) {
+          localStorage.setItem("currentClassYear", newYear);
+          window.ClassStatusServer.syncStudentsFromRemote().then(function () {
+            C.ensureDb().then(function () {
+              route();
+            });
+          });
+        }
+      });
+    }
+
+    var btnCreateYear = document.getElementById("btn-create-new-year");
+    if (btnCreateYear) {
+      btnCreateYear.addEventListener("click", function () {
+        showCreateYearModal();
+      });
+    }
+
+    var btnActivateYear = document.getElementById("btn-activate-selected-year");
+    if (btnActivateYear) {
+      btnActivateYear.addEventListener("click", function () {
+        handleActivateSelectedYear();
       });
     }
   }
@@ -18548,14 +18717,36 @@ function buildStockMarketTeacherStocksTableRows(db) {
     
     window.ClassStatusServer.login(loginId, pinOrPassword)
       .then(function (session) {
-        window.ClassStatusServer.syncStudentsFromRemote().then(function () {
-          C.ensureDb().then(function () {
-            if (!window.__classStatusHashBound) {
-              window.__classStatusHashBound = true;
-              window.addEventListener("hashchange", route);
+        var yearPromise = Promise.resolve();
+        if (session.role === "teacher") {
+          yearPromise = window.ClassStatusServer.getYearsList().then(function (data) {
+            if (data.ok) {
+              window.classYears = data.years || [];
+              window.activeClassYear = data.activeYear || "";
+              var savedYear = localStorage.getItem("currentClassYear");
+              if (!savedYear || data.years.indexOf(savedYear) === -1) {
+                if (data.activeYear) {
+                  localStorage.setItem("currentClassYear", data.activeYear);
+                } else if (data.years.length > 0) {
+                  localStorage.setItem("currentClassYear", data.years[0]);
+                }
+              }
             }
-            window.location.hash = session.role === "teacher" ? "#/teacher" : "#/student";
-            route();
+          }).catch(function (e) {
+            console.error("Failed to load years list on login:", e);
+          });
+        }
+
+        return yearPromise.then(function () {
+          return window.ClassStatusServer.syncStudentsFromRemote().then(function () {
+            return C.ensureDb().then(function () {
+              if (!window.__classStatusHashBound) {
+                window.__classStatusHashBound = true;
+                window.addEventListener("hashchange", route);
+              }
+              window.location.hash = session.role === "teacher" ? "#/teacher" : "#/student";
+              route();
+            });
           });
         });
       })
@@ -18614,16 +18805,38 @@ function buildStockMarketTeacherStocksTableRows(db) {
   function runServerCloudApp() {
     var s = C.getSession();
     if (s && s.userId) {
-      window.ClassStatusServer.syncStudentsFromRemote().then(function () {
-        C.ensureDb().then(function () {
-          if (!window.__classStatusHashBound) {
-            window.__classStatusHashBound = true;
-            window.addEventListener("hashchange", route);
+      var yearPromise = Promise.resolve();
+      if (s.role === "teacher") {
+        yearPromise = window.ClassStatusServer.getYearsList().then(function (data) {
+          if (data.ok) {
+            window.classYears = data.years || [];
+            window.activeClassYear = data.activeYear || "";
+            var savedYear = localStorage.getItem("currentClassYear");
+            if (!savedYear || data.years.indexOf(savedYear) === -1) {
+              if (data.activeYear) {
+                localStorage.setItem("currentClassYear", data.activeYear);
+              } else if (data.years.length > 0) {
+                localStorage.setItem("currentClassYear", data.years[0]);
+              }
+            }
           }
-          if (!location.hash || location.hash === "#") {
-            window.location.hash = s.role === "teacher" ? "#/teacher" : "#/student";
-          }
-          route();
+        }).catch(function (e) {
+          console.error("Failed to load years list:", e);
+        });
+      }
+
+      yearPromise.then(function () {
+        window.ClassStatusServer.syncStudentsFromRemote().then(function () {
+          C.ensureDb().then(function () {
+            if (!window.__classStatusHashBound) {
+              window.__classStatusHashBound = true;
+              window.addEventListener("hashchange", route);
+            }
+            if (!location.hash || location.hash === "#") {
+              window.location.hash = s.role === "teacher" ? "#/teacher" : "#/student";
+            }
+            route();
+          });
         });
       }).catch(function (err) {
         console.warn("Express 서버 데이터 로드 실패, 로그인 화면으로 강제 이동:", err);

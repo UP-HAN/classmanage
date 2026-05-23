@@ -7652,6 +7652,16 @@
       '</a>' +
       '</div></section>';
 
+    var backupPanelHtml =
+      '<section class="panel" style="margin-top: 1.5rem;">' +
+      '<h2 class="panel__title"><span class="panel__title-ico" aria-hidden="true">💾</span>학급 데이터 안전 보존</h2>' +
+      '<p class="panel__text">소중한 학급 운영 데이터를 언제든 파일로 내보내어 개인 저장소나 USB에 보관하실 수 있습니다.</p>' +
+      '<div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;">' +
+      '<button id="btn-download-db-backup" class="btn btn--accent" style="display: flex; align-items: center; justify-content: center; padding: 1rem 1.5rem; text-decoration: none; border-radius: 8px; box-shadow: var(--shadow); height: auto; gap: 0.5rem; background: linear-gradient(135deg, #10b981 0%, #059669 100%); border: none; cursor: pointer; color: white; font-weight: bold; font-size: 1rem;">' +
+      '<span>💾</span>학급 데이터 백업 다운로드 (.json)' +
+      '</button>' +
+      '</div></section>';
+
     var main =
       '<div class="stat-grid">' +
       cardTax +
@@ -7665,10 +7675,29 @@
       cardMax +
       "</div>" +
       shopShortcutsHtml +
+      backupPanelHtml +
       buildClassJobsDashboardSection(db) +
       '<p class="panel__hint panel__hint--dash"><span class="panel__hint-ico" aria-hidden="true">📌</span>데모 선생님: <code>teacher</code> / <code>demo123</code></p>';
     shell(renderTeacherChrome("대시보드", "dash", main));
     bindLogout();
+
+    var btnDl = document.getElementById("btn-download-db-backup");
+    if (btnDl) {
+      btnDl.addEventListener("click", function () {
+        var dbDl = getDb();
+        if (!dbDl) return;
+        var dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dbDl, null, 2));
+        var downloadAnchor = document.createElement("a");
+        var d = new Date();
+        var dateStr = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+        var fileName = "학급운영도구_백업_" + dateStr + ".json";
+        downloadAnchor.setAttribute("href", dataStr);
+        downloadAnchor.setAttribute("download", fileName);
+        document.body.appendChild(downloadAnchor);
+        downloadAnchor.click();
+        downloadAnchor.remove();
+      });
+    }
 
     var fq = document.getElementById("form-class-job-quotas");
     if (fq) {

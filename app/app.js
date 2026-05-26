@@ -3171,7 +3171,8 @@
       return { ok: true, msg: "매수가 완료되었습니다." };
     }).catch(function(err) {
       console.error("[StockMarket] 매수 동기화 실패:", err);
-      return { ok: false, msg: "서버 동기화에 실패하여 매수를 진행할 수 없습니다. (인터넷 연결을 확인하세요)" };
+      var serverErrMsg = err && err.message ? err.message : "인터넷 연결을 확인하세요";
+      return { ok: false, msg: "서버 동기화에 실패하여 매수를 진행할 수 없습니다. (" + serverErrMsg + ")" };
     });
   }
 
@@ -3256,7 +3257,8 @@
       return { ok: true, msg: "매도가 완료되었습니다." };
     }).catch(function(err) {
       console.error("[StockMarket] 매도 동기화 실패:", err);
-      return { ok: false, msg: "서버 동기화에 실패하여 매도를 진행할 수 없습니다. (인터넷 연결을 확인하세요)" };
+      var serverErrMsg = err && err.message ? err.message : "인터넷 연결을 확인하세요";
+      return { ok: false, msg: "서버 동기화에 실패하여 매도를 진행할 수 없습니다. (" + serverErrMsg + ")" };
     });
   }
 

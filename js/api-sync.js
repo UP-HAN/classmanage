@@ -110,7 +110,7 @@
   var debounceTimer = null;
 
   function afterLocalSave(db, immediate) {
-    if (!isServerCloudEnabled() || !isSyncActive()) return;
+    if (!isServerCloudEnabled() || !isSyncActive()) return Promise.resolve();
     clearTimeout(debounceTimer);
     
     function upload() {
@@ -119,13 +119,18 @@
         body: JSON.stringify(db)
       }).catch(function (err) {
         console.warn("[ClassStatus] Express 서버 저장 실패:", err);
+        throw err;
       });
     }
 
     if (immediate) {
-      upload();
+      return upload();
     } else {
-      debounceTimer = setTimeout(upload, DEBOUNCE_MS);
+      return new Promise(function (resolve) {
+        debounceTimer = setTimeout(function () {
+          upload().then(resolve).catch(resolve);
+        }, DEBOUNCE_MS);
+      });
     }
   }
 

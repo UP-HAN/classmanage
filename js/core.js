@@ -75,8 +75,9 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
     } catch (e) {}
     if (global.ClassStatusServer && typeof global.ClassStatusServer.afterLocalSave === "function") {
-      global.ClassStatusServer.afterLocalSave(db, immediate);
+      return global.ClassStatusServer.afterLocalSave(db, immediate);
     }
+    return Promise.resolve();
   }
 
   function ensureDb() {

@@ -132,7 +132,7 @@
   }
 
   function saveDb(db, immediate) {
-    C.saveDb(db, immediate);
+    return C.saveDb(db, immediate);
   }
 
   function requireSession() {
@@ -3167,8 +3167,12 @@
       occurredAt: Date.now()
     });
     
-    saveDb(db, true);
-    return { ok: true, msg: "매수가 완료되었습니다." };
+    return saveDb(db, true).then(function() {
+      return { ok: true, msg: "매수가 완료되었습니다." };
+    }).catch(function(err) {
+      console.error("[StockMarket] 매수 동기화 실패:", err);
+      return { ok: false, msg: "서버 동기화에 실패하여 매수를 진행할 수 없습니다. (인터넷 연결을 확인하세요)" };
+    });
   }
 
   function sellStock(db, studentId, code, mode, amount) {
@@ -3248,8 +3252,12 @@
       occurredAt: Date.now()
     });
     
-    saveDb(db, true);
-    return { ok: true, msg: "매도가 완료되었습니다." };
+    return saveDb(db, true).then(function() {
+      return { ok: true, msg: "매도가 완료되었습니다." };
+    }).catch(function(err) {
+      console.error("[StockMarket] 매도 동기화 실패:", err);
+      return { ok: false, msg: "서버 동기화에 실패하여 매도를 진행할 수 없습니다. (인터넷 연결을 확인하세요)" };
+    });
   }
 
   function cloneStatsPayload(obj) {
@@ -11063,12 +11071,17 @@
           res = sellStock(tradeDb, studentId, code, modeVal, amount);
         }
         
-        if (res.ok) {
-          alert(res.msg);
-          viewStudentStockMarket({ studentId: studentId });
-        } else {
-          alert(res.msg);
-        }
+        Promise.resolve(res).then(function (tradeRes) {
+          if (tradeRes.ok) {
+            alert(tradeRes.msg);
+            viewStudentStockMarket({ studentId: studentId });
+          } else {
+            alert(tradeRes.msg);
+          }
+        }).catch(function (err) {
+          console.error("[StockMarket] 거래 실행 에러:", err);
+          alert("주식 거래 처리 중 예기치 못한 오류가 발생했습니다.");
+        });
       });
     }
 

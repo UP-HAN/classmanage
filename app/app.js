@@ -135,41 +135,7 @@
     C.saveDb(db, immediate);
   }
 
-  function isFirebaseCloudEnabled() {
-    if (isServerCloudEnabled()) return false;
-    var cfg = window.ClassStatusFirebaseConfig;
-    return !!(cfg && cfg.enabled && String(cfg.apiKey || "").trim());
-  }
-
-  function ensureTeacherSessionFromFirebase() {
-    if (typeof firebase === "undefined" || !firebase.auth) return;
-    var u = firebase.auth().currentUser;
-    if (!u) return;
-    C.setSession({
-      userId: "u-teacher",
-      role: "teacher",
-      studentId: null,
-      displayName: u.displayName || (u.email ? String(u.email).split("@")[0] : "담임"),
-    });
-  }
-
   function requireSession() {
-    if (isFirebaseCloudEnabled()) {
-      if (typeof firebase === "undefined" || !firebase.auth) return null;
-      var s0 = C.getSession();
-      var fUser = firebase.auth().currentUser;
-      if (s0 && s0.userId && s0.role === "student" && s0.studentId) {
-        var db0 = C.loadDb();
-        var u0 = db0 ? getUser(db0, s0.userId) : null;
-        if (u0 && u0.role === "student" && u0.studentId === s0.studentId) return s0;
-        if (fUser && fUser.isAnonymous) return s0;
-      }
-      if (!fUser) return null;
-      if (s0 && s0.userId && s0.role === "teacher") return s0;
-      ensureTeacherSessionFromFirebase();
-      return C.getSession();
-    }
-
     var s = C.getSession();
     if (s && s.userId) return s;
     return null;
@@ -7362,20 +7328,6 @@
           try {
             window.close();
           } catch (err) {}
-          return;
-        }
-        var sess = C.getSession();
-        if (isFirebaseCloudEnabled() && sess && sess.role === "student") {
-          window.__classStatusSkipClearDbOnAuth = true;
-          C.clearSession();
-          if (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser) {
-            firebase.auth().signOut();
-          }
-          window.location.href = "index.html";
-          return;
-        }
-        if (isFirebaseCloudEnabled() && typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser) {
-          firebase.auth().signOut();
           return;
         }
         C.clearSession();

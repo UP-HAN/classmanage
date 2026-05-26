@@ -1,7 +1,7 @@
 (function (global) {
   var STORAGE_KEY = "class-status-db-v1";
   var SESSION_KEY = "classStatusSession";
-  /** Firebase 등에서 주입 시 메모리가 우선 (동기 loadDb와 호환) */
+  /** 서버 등에서 주입 시 메모리가 우선 (동기 loadDb와 호환) */
   var memoryDb = null;
 
   function randomSalt() {
@@ -76,8 +76,6 @@
     } catch (e) {}
     if (global.ClassStatusServer && typeof global.ClassStatusServer.afterLocalSave === "function") {
       global.ClassStatusServer.afterLocalSave(db, immediate);
-    } else if (global.ClassStatusFirebase && typeof global.ClassStatusFirebase.afterLocalSave === "function") {
-      global.ClassStatusFirebase.afterLocalSave(db, immediate);
     }
   }
 

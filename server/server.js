@@ -1162,7 +1162,7 @@ app.post('/api/sync', async (req, res) => {
       console.error('롤백 에러:', rbError);
     }
     console.error('동기화 저장 에러:', error);
-    return res.status(500).json({ ok: false, msg: '서버 저장 중 오류가 발생했습니다.' });
+    return res.status(500).json({ ok: false, msg: '서버 저장 중 오류가 발생했습니다: ' + error.message });
   } finally {
     conn.release();
   }

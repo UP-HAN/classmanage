@@ -632,6 +632,25 @@ app.post('/api/sync', async (req, res) => {
     return res.status(400).json({ ok: false, msg: '데이터 형식이 올바르지 않습니다.' });
   }
 
+  const sessionRole = req.headers['x-session-role'] || 'unknown';
+  const sessionStudentId = req.headers['x-session-student-id'] || null;
+  const isTeacher = sessionRole === 'teacher';
+
+  const mergeArraysById = (existingArr, incomingArr) => {
+    const arr1 = Array.isArray(existingArr) ? existingArr : [];
+    const arr2 = Array.isArray(incomingArr) ? incomingArr : [];
+    const map = new Map();
+    arr1.forEach(item => { if (item && item.id) map.set(item.id, item); });
+    arr2.forEach(item => { if (item && item.id) map.set(item.id, item); });
+    return Array.from(map.values());
+  };
+
+  const mergeHoldings = (existingHoldings, incomingHoldings) => {
+    const h1 = (existingHoldings && typeof existingHoldings === 'object') ? existingHoldings : {};
+    const h2 = (incomingHoldings && typeof incomingHoldings === 'object') ? incomingHoldings : {};
+    return { ...h1, ...h2 };
+  };
+
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
@@ -639,70 +658,189 @@ app.post('/api/sync', async (req, res) => {
     // Disable foreign key checks during reconstruction
     await conn.query('SET FOREIGN_KEY_CHECKS = 0');
 
-    // 1. Delete all existing records from all 10 tables
-    const tables = [
-      'users', 'students', 'coupons', 'rentals', 'canteen_products',
-      'coupon_merchant_logs', 'canteen_merchant_logs', 'activity_logs',
-      'bulk_adjustments', 'settings'
-    ];
-    for (const table of tables) {
-      await conn.query(`DELETE FROM ${table}`);
-    }
+    // 1. Fetch current data for merging
+    const [dbStudents] = await conn.query('SELECT * FROM students');
+    const dbStudentsMap = new Map(dbStudents.map(s => [s.id, s]));
 
-    // 2. Insert students
-    if (Array.isArray(dbData.students)) {
-      for (const st of dbData.students) {
-        await conn.query(
-          `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom, stock_portfolio)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            st.id,
-            st.name,
-            parseInt(st.number, 10) || 0,
-            st.gender || 'female',
-            parseInt(st.lv, 10) || 1,
-            parseInt(st.exp, 10) || 0,
-            parseInt(st.calory, 10) || 0,
-            parseInt(st.coupons, 10) || 0,
-            st.classRole || '',
-            st.jobId || '',
-            st.avatarDataUrl || null,
-            st.avatarCustom || null,
-            st.stockPortfolio ? JSON.stringify(st.stockPortfolio) : null
-          ]
-        );
+    const [dbUsers] = await conn.query('SELECT * FROM users');
+    const dbUsersMap = new Map(dbUsers.map(u => [u.id, u]));
+
+    // 2. Sync Students
+    if (isTeacher) {
+      const incomingIds = new Set();
+      if (Array.isArray(dbData.students)) {
+        for (const st of dbData.students) {
+          incomingIds.add(st.id);
+          const dbSt = dbStudentsMap.get(st.id);
+          // Keep database stock_portfolio for existing students to prevent teacher cache overwrite
+          const stockPortfolioToSave = dbSt ? dbSt.stock_portfolio : (st.stockPortfolio ? JSON.stringify(st.stockPortfolio) : null);
+          
+          await conn.query(
+            `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom, stock_portfolio)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE 
+               name = VALUES(name),
+               number = VALUES(number),
+               gender = VALUES(gender),
+               lv = VALUES(lv),
+               exp = VALUES(exp),
+               calory = VALUES(calory),
+               coupons = VALUES(coupons),
+               class_role = VALUES(class_role),
+               job_id = VALUES(job_id),
+               avatar_data_url = VALUES(avatar_data_url),
+               avatar_custom = VALUES(avatar_custom),
+               stock_portfolio = VALUES(stock_portfolio)`,
+            [
+              st.id,
+              st.name,
+              parseInt(st.number, 10) || 0,
+              st.gender || 'female',
+              parseInt(st.lv, 10) || 1,
+              parseInt(st.exp, 10) || 0,
+              parseInt(st.calory, 10) || 0,
+              parseInt(st.coupons, 10) || 0,
+              st.classRole || '',
+              st.jobId || '',
+              st.avatarDataUrl || null,
+              st.avatarCustom || null,
+              stockPortfolioToSave
+            ]
+          );
+        }
+      }
+      // Delete students not in incoming payload
+      for (const dbSt of dbStudents) {
+        if (!incomingIds.has(dbSt.id)) {
+          await conn.query('DELETE FROM students WHERE id = ?', [dbSt.id]);
+        }
+      }
+    } else if (sessionStudentId) {
+      // Student sync - only update their own student row
+      if (Array.isArray(dbData.students)) {
+        const mySt = dbData.students.find(st => st.id === sessionStudentId);
+        if (mySt) {
+          await conn.query(
+            `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom, stock_portfolio)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE 
+               name = VALUES(name),
+               number = VALUES(number),
+               gender = VALUES(gender),
+               lv = VALUES(lv),
+               exp = VALUES(exp),
+               calory = VALUES(calory),
+               coupons = VALUES(coupons),
+               class_role = VALUES(class_role),
+               job_id = VALUES(job_id),
+               avatar_data_url = VALUES(avatar_data_url),
+               avatar_custom = VALUES(avatar_custom),
+               stock_portfolio = VALUES(stock_portfolio)`,
+            [
+              mySt.id,
+              mySt.name,
+              parseInt(mySt.number, 10) || 0,
+              mySt.gender || 'female',
+              parseInt(mySt.lv, 10) || 1,
+              parseInt(mySt.exp, 10) || 0,
+              parseInt(mySt.calory, 10) || 0,
+              parseInt(mySt.coupons, 10) || 0,
+              mySt.classRole || '',
+              mySt.jobId || '',
+              mySt.avatarDataUrl || null,
+              mySt.avatarCustom || null,
+              mySt.stockPortfolio ? JSON.stringify(mySt.stockPortfolio) : null
+            ]
+          );
+        }
       }
     }
 
-    // 3. Insert users
-    if (Array.isArray(dbData.users)) {
-      const studentIds = new Set(Array.isArray(dbData.students) ? dbData.students.map(st => st.id) : []);
-      for (const u of dbData.users) {
-        const studentIdToInsert = studentIds.has(u.studentId) ? u.studentId : null;
-        await conn.query(
-          `INSERT INTO users (id, login_id, password_hash, salt, role, display_name, pin_code, pin_must_change, student_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            u.id,
-            u.loginId,
-            u.passwordHash || '',
-            u.salt || '',
-            u.role || 'student',
-            u.displayName || '',
-            u.pinCode || null,
-            u.pinMustChange === false ? 0 : 1,
-            studentIdToInsert
-          ]
-        );
+    // 3. Sync Users
+    if (isTeacher) {
+      const incomingUserIds = new Set();
+      if (Array.isArray(dbData.users)) {
+        const studentIds = new Set(Array.isArray(dbData.students) ? dbData.students.map(st => st.id) : []);
+        for (const u of dbData.users) {
+          incomingUserIds.add(u.id);
+          const studentIdToInsert = studentIds.has(u.studentId) ? u.studentId : null;
+          await conn.query(
+            `INSERT INTO users (id, login_id, password_hash, salt, role, display_name, pin_code, pin_must_change, student_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               login_id = VALUES(login_id),
+               password_hash = VALUES(password_hash),
+               salt = VALUES(salt),
+               role = VALUES(role),
+               display_name = VALUES(display_name),
+               pin_code = VALUES(pin_code),
+               pin_must_change = VALUES(pin_must_change),
+               student_id = VALUES(student_id)`,
+            [
+              u.id,
+              u.loginId,
+              u.passwordHash || '',
+              u.salt || '',
+              u.role || 'student',
+              u.displayName || '',
+              u.pinCode || null,
+              u.pinMustChange === false ? 0 : 1,
+              studentIdToInsert
+            ]
+          );
+        }
+      }
+      // Delete users not in incoming list
+      for (const dbU of dbUsers) {
+        if (!incomingUserIds.has(dbU.id)) {
+          await conn.query('DELETE FROM users WHERE id = ?', [dbU.id]);
+        }
+      }
+    } else if (sessionStudentId) {
+      // Student - only update their own user row
+      if (Array.isArray(dbData.users)) {
+        const myU = dbData.users.find(u => u.studentId === sessionStudentId);
+        if (myU) {
+          await conn.query(
+            `INSERT INTO users (id, login_id, password_hash, salt, role, display_name, pin_code, pin_must_change, student_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               password_hash = VALUES(password_hash),
+               salt = VALUES(salt),
+               pin_code = VALUES(pin_code),
+               pin_must_change = VALUES(pin_must_change)`,
+            [
+              myU.id,
+              myU.loginId,
+              myU.passwordHash || '',
+              myU.salt || '',
+              myU.role || 'student',
+              myU.displayName || '',
+              myU.pinCode || null,
+              myU.pinMustChange === false ? 0 : 1,
+              sessionStudentId
+            ]
+          );
+        }
       }
     }
 
-    // 4. Insert coupons (coupons table)
+    // 4. Coupons
     if (dbData.couponShop && Array.isArray(dbData.couponShop.products)) {
+      const incomingCouponIds = new Set(dbData.couponShop.products.map(p => p.id));
       for (const p of dbData.couponShop.products) {
         await conn.query(
           `INSERT INTO coupons (id, name, price_cal, total_stock, remaining_stock, \`desc\`, is_group, group_target_count, merchant_student_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             name = VALUES(name),
+             price_cal = VALUES(price_cal),
+             total_stock = VALUES(total_stock),
+             remaining_stock = VALUES(remaining_stock),
+             \`desc\` = VALUES(\`desc\`),
+             is_group = VALUES(is_group),
+             group_target_count = VALUES(group_target_count),
+             merchant_student_id = VALUES(merchant_student_id)`,
           [
             p.id,
             p.name,
@@ -716,38 +854,30 @@ app.post('/api/sync', async (req, res) => {
           ]
         );
       }
-    }
-
-    // 5. Insert rentals (rentals table)
-    if (dbData.couponShop && Array.isArray(dbData.couponShop.rentals)) {
-      const couponIds = new Set(dbData.couponShop.products ? dbData.couponShop.products.map(p => p.id) : []);
-      for (const r of dbData.couponShop.rentals) {
-        const productIdToInsert = couponIds.has(r.productId) ? r.productId : null;
-        await conn.query(
-          `INSERT INTO rentals (id, product_id, coupon_name, student_id, student_name, status, rented_at, use_requested_at, merchant_approved_at, resolved_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            r.id,
-            productIdToInsert,
-            r.couponName || '',
-            r.studentId,
-            r.studentName || '',
-            r.status || 'held',
-            r.rentedAt || Date.now(),
-            r.useRequestedAt || null,
-            r.merchantApprovedAt || null,
-            r.resolvedAt || null
-          ]
-        );
+      if (isTeacher) {
+        const [dbCoupons] = await conn.query('SELECT id FROM coupons');
+        for (const c of dbCoupons) {
+          if (!incomingCouponIds.has(c.id)) {
+            await conn.query('DELETE FROM coupons WHERE id = ?', [c.id]);
+          }
+        }
       }
     }
 
-    // 6. Insert canteen_products
+    // 5. Canteen Products
     if (dbData.canteenShop && Array.isArray(dbData.canteenShop.products)) {
+      const incomingProdIds = new Set(dbData.canteenShop.products.map(p => p.id));
       for (const p of dbData.canteenShop.products) {
         await conn.query(
           `INSERT INTO canteen_products (id, name, price_cal, total_stock, remaining_stock, \`desc\`, merchant_student_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             name = VALUES(name),
+             price_cal = VALUES(price_cal),
+             total_stock = VALUES(total_stock),
+             remaining_stock = VALUES(remaining_stock),
+             \`desc\` = VALUES(\`desc\`),
+             merchant_student_id = VALUES(merchant_student_id)`,
           [
             p.id,
             p.name,
@@ -759,89 +889,165 @@ app.post('/api/sync', async (req, res) => {
           ]
         );
       }
+      if (isTeacher) {
+        const [dbProds] = await conn.query('SELECT id FROM canteen_products');
+        for (const p of dbProds) {
+          if (!incomingProdIds.has(p.id)) {
+            await conn.query('DELETE FROM canteen_products WHERE id = ?', [p.id]);
+          }
+        }
+      }
     }
 
-    // 7. Insert coupon_merchant_logs
+    // 6. Rentals
+    if (dbData.couponShop && Array.isArray(dbData.couponShop.rentals)) {
+      const [dbRentals] = await conn.query('SELECT id FROM rentals');
+      const dbRentalIds = new Set(dbRentals.map(r => r.id));
+      const incomingRentalIds = new Set(dbData.couponShop.rentals.map(r => r.id));
+
+      for (const r of dbData.couponShop.rentals) {
+        await conn.query(
+          `INSERT INTO rentals (id, product_id, coupon_name, student_id, student_name, status, rented_at, use_requested_at, merchant_approved_at, resolved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             status = VALUES(status),
+             use_requested_at = VALUES(use_requested_at),
+             merchant_approved_at = VALUES(merchant_approved_at),
+             resolved_at = VALUES(resolved_at)`,
+          [
+            r.id,
+            r.productId || null,
+            r.couponName || '',
+            r.studentId,
+            r.studentName || '',
+            r.status || 'held',
+            r.rentedAt || Date.now(),
+            r.useRequestedAt || null,
+            r.merchantApprovedAt || null,
+            r.resolvedAt || null
+          ]
+        );
+      }
+      if (isTeacher) {
+        for (const id of dbRentalIds) {
+          if (!incomingRentalIds.has(id)) {
+            await conn.query('DELETE FROM rentals WHERE id = ?', [id]);
+          }
+        }
+      }
+    }
+
+    // Helper to insert new logs only
+    const mergeLogs = async (tableName, logsArray, insertQuery, mapRowToValues) => {
+      if (!Array.isArray(logsArray) || logsArray.length === 0) return;
+      const [existing] = await conn.query(`SELECT id FROM ${tableName}`);
+      const existingIds = new Set(existing.map(e => e.id));
+      for (const log of logsArray) {
+        if (!existingIds.has(log.id)) {
+          const values = mapRowToValues(log);
+          await conn.query(insertQuery, values);
+        }
+      }
+    };
+
+    // 7. coupon_merchant_logs
     if (dbData.couponShop && Array.isArray(dbData.couponShop.merchantLog)) {
-      for (const log of dbData.couponShop.merchantLog) {
-        await conn.query(
-          `INSERT INTO coupon_merchant_logs (id, occurred_at, date_ymd, product_id, coupon_name, buyer_student_id, price_cal, merchant_student_id, rental_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            log.id,
-            log.occurredAt || Date.now(),
-            log.dateYmd || '',
-            log.productId || null,
-            log.couponName || '',
-            log.buyerStudentId || '',
-            parseInt(log.priceCal, 10) || 0,
-            log.merchantStudentId || null,
-            log.rentalId || null
-          ]
-        );
-      }
+      await mergeLogs(
+        'coupon_merchant_logs',
+        dbData.couponShop.merchantLog,
+        `INSERT INTO coupon_merchant_logs (id, occurred_at, date_ymd, product_id, coupon_name, buyer_student_id, price_cal, merchant_student_id, rental_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        log => [
+          log.id,
+          log.occurredAt || Date.now(),
+          log.dateYmd || '',
+          log.productId || null,
+          log.couponName || '',
+          log.buyerStudentId || '',
+          parseInt(log.priceCal, 10) || 0,
+          log.merchantStudentId || null,
+          log.rentalId || null
+        ]
+      );
     }
 
-    // 8. Insert canteen_merchant_logs
+    // 8. canteen_merchant_logs
     if (dbData.canteenShop && Array.isArray(dbData.canteenShop.merchantLog)) {
-      for (const log of dbData.canteenShop.merchantLog) {
-        await conn.query(
-          `INSERT INTO canteen_merchant_logs (id, occurred_at, date_ymd, product_id, product_name, buyer_student_id, price_cal, merchant_student_id, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            log.id,
-            log.occurredAt || Date.now(),
-            log.dateYmd || '',
-            log.productId || null,
-            log.productName || '',
-            log.buyerStudentId || '',
-            parseInt(log.priceCal, 10) || 0,
-            log.merchantStudentId || null,
-            log.status || 'approved'
-          ]
-        );
-      }
+      await mergeLogs(
+        'canteen_merchant_logs',
+        dbData.canteenShop.merchantLog,
+        `INSERT INTO canteen_merchant_logs (id, occurred_at, date_ymd, product_id, product_name, buyer_student_id, price_cal, merchant_student_id, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        log => [
+          log.id,
+          log.occurredAt || Date.now(),
+          log.dateYmd || '',
+          log.productId || null,
+          log.productName || '',
+          log.buyerStudentId || '',
+          parseInt(log.priceCal, 10) || 0,
+          log.merchantStudentId || null,
+          log.status || 'approved'
+        ]
+      );
     }
 
-    // 9. Insert activity_logs
+    // 9. activity_logs
     if (Array.isArray(dbData.activityLogs)) {
-      for (const log of dbData.activityLogs) {
-        await conn.query(
-          `INSERT INTO activity_logs (id, student_id, occurred_at, summary, exp_delta, calory_delta, bulk_job_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            log.id || ('log-' + Date.now() + Math.random().toString(36).substr(2, 5)),
-            log.studentId || '',
-            log.occurredAt || Date.now(),
-            log.summary || '',
-            parseInt(log.expDelta, 10) || 0,
-            parseInt(log.caloryDelta, 10) || 0,
-            log.bulkJobId || null
-          ]
-        );
-      }
+      await mergeLogs(
+        'activity_logs',
+        dbData.activityLogs,
+        `INSERT INTO activity_logs (id, student_id, occurred_at, summary, exp_delta, calory_delta, bulk_job_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        log => [
+          log.id || ('log-' + Date.now() + Math.random().toString(36).substr(2, 5)),
+          log.studentId || '',
+          log.occurredAt || Date.now(),
+          log.summary || '',
+          parseInt(log.expDelta, 10) || 0,
+          parseInt(log.caloryDelta, 10) || 0,
+          log.bulkJobId || null
+        ]
+      );
     }
 
-    // 10. Insert bulk_adjustments
+    // 10. bulk_adjustments
     if (Array.isArray(dbData.bulkAdjustments)) {
-      for (const adj of dbData.bulkAdjustments) {
-        await conn.query(
-          `INSERT INTO bulk_adjustments (id, occurred_at, \`type\`, target_count, summary, exp_delta, calory_delta)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            adj.id || ('adj-' + Date.now() + Math.random().toString(36).substr(2, 5)),
-            adj.occurredAt || Date.now(),
-            adj.type || '',
-            parseInt(adj.targetCount, 10) || 0,
-            adj.summary || '',
-            parseInt(adj.expDelta, 10) || 0,
-            parseInt(adj.caloryDelta, 10) || 0
-          ]
-        );
-      }
+      await mergeLogs(
+        'bulk_adjustments',
+        dbData.bulkAdjustments,
+        `INSERT INTO bulk_adjustments (id, occurred_at, \`type\`, target_count, summary, exp_delta, calory_delta)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        adj => [
+          adj.id || ('adj-' + Date.now() + Math.random().toString(36).substr(2, 5)),
+          adj.occurredAt || Date.now(),
+          adj.type || '',
+          parseInt(adj.targetCount, 10) || 0,
+          adj.summary || '',
+          parseInt(adj.expDelta, 10) || 0,
+          parseInt(adj.caloryDelta, 10) || 0
+        ]
+      );
     }
 
-    // 11. Insert settings (Config keys)
+    // 11. Sync Settings
+    const [dbSettings] = await conn.query('SELECT `key`, `value` FROM settings');
+    const dbSettingsMap = new Map(dbSettings.map(s => [s.key, s.value]));
+
+    const saveMergedSetting = async (key, incomingVal, mergeFunc) => {
+      let dbValStr = dbSettingsMap.get(key);
+      let dbVal = null;
+      if (dbValStr !== undefined && dbValStr !== null) {
+        dbVal = typeof dbValStr === 'string' ? JSON.parse(dbValStr) : dbValStr;
+      }
+      const mergedVal = mergeFunc(dbVal, incomingVal);
+      await conn.query(
+        `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`)`,
+        [key, JSON.stringify(mergedVal)]
+      );
+    };
+
     const settingsKeys = [
       'version', 'titleGrants', 'behaviorNotes', 'classJobQuotas',
       'bankPayrollRequests', 'taxCollectionRequests', 'djRequests',
@@ -857,27 +1063,62 @@ app.post('/api/sync', async (req, res) => {
         if (key === 'stockMarket' && Array.isArray(valToSave)) {
           valToSave = {};
         }
-        await conn.query(
-          `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)`,
-          [key, JSON.stringify(valToSave)]
-        );
+
+        await saveMergedSetting(key, valToSave, (dbVal, incoming) => {
+          if (!dbVal) return incoming;
+          
+          if (key === 'stockMarket') {
+            const mergedTradeLog = mergeArraysById(dbVal.tradeLog, incoming.tradeLog);
+            if (isTeacher) {
+              return {
+                ...incoming,
+                tradeLog: mergedTradeLog,
+                currentPrices: (incoming.lastPricesUpdatedAt || 0) > (dbVal.lastPricesUpdatedAt || 0) ? incoming.currentPrices : dbVal.currentPrices,
+                rawPrices: (incoming.lastPricesUpdatedAt || 0) > (dbVal.lastPricesUpdatedAt || 0) ? incoming.rawPrices : dbVal.rawPrices,
+                lastPricesUpdatedAt: Math.max(incoming.lastPricesUpdatedAt || 0, dbVal.lastPricesUpdatedAt || 0)
+              };
+            } else {
+              return {
+                ...dbVal,
+                tradeLog: mergedTradeLog
+              };
+            }
+          }
+          
+          const listKeys = [
+            'bankPayrollRequests', 'taxCollectionRequests', 'djRequests',
+            'recyclerLogs', 'envLogs', 'cleaningChecklistRequests',
+            'statisticsApprovalRequests', 'postmanErrandRequests'
+          ];
+          if (listKeys.includes(key)) {
+            return mergeArraysById(dbVal, incoming);
+          }
+          
+          if (isTeacher) {
+            return incoming;
+          } else {
+            return dbVal;
+          }
+        });
       }
     }
 
-    // Insert coupon_shop_meta
     if (dbData.couponShop) {
       const couponShopMeta = {
         pendingOffers: dbData.couponShop.pendingOffers || [],
         holdings: dbData.couponShop.holdings || {},
         treasuryTotal: dbData.couponShop.treasuryTotal || 0
       };
-      await conn.query(
-        `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)`,
-        ['coupon_shop_meta', JSON.stringify(couponShopMeta)]
-      );
+      await saveMergedSetting('coupon_shop_meta', couponShopMeta, (dbVal, incoming) => {
+        if (!dbVal) return incoming;
+        return {
+          pendingOffers: mergeArraysById(dbVal.pendingOffers, incoming.pendingOffers),
+          holdings: mergeHoldings(dbVal.holdings, incoming.holdings),
+          treasuryTotal: isTeacher ? incoming.treasuryTotal : dbVal.treasuryTotal
+        };
+      });
     }
 
-    // Insert canteen_shop_meta
     if (dbData.canteenShop) {
       const canteenShopMeta = {
         pendingOffers: dbData.canteenShop.pendingOffers || [],
@@ -885,18 +1126,26 @@ app.post('/api/sync', async (req, res) => {
         treasuryTotal: dbData.canteenShop.treasuryTotal || 0,
         orders: dbData.canteenShop.orders || []
       };
-      await conn.query(
-        `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)`,
-        ['canteen_shop_meta', JSON.stringify(canteenShopMeta)]
-      );
+      await saveMergedSetting('canteen_shop_meta', canteenShopMeta, (dbVal, incoming) => {
+        if (!dbVal) return incoming;
+        return {
+          pendingOffers: mergeArraysById(dbVal.pendingOffers, incoming.pendingOffers),
+          holdings: mergeHoldings(dbVal.holdings, incoming.holdings),
+          treasuryTotal: isTeacher ? incoming.treasuryTotal : dbVal.treasuryTotal,
+          orders: mergeArraysById(dbVal.orders, incoming.orders)
+        };
+      });
     }
 
-    // Insert title_shop_meta
     if (dbData.titleShop !== undefined && dbData.titleShop !== null) {
-      await conn.query(
-        `INSERT INTO settings (\`key\`, \`value\`) VALUES (?, ?)`,
-        ['title_shop_meta', JSON.stringify(dbData.titleShop)]
-      );
+      await saveMergedSetting('title_shop_meta', dbData.titleShop, (dbVal, incoming) => {
+        if (!dbVal) return incoming;
+        return {
+          pendingOffers: mergeArraysById(dbVal.pendingOffers, incoming.pendingOffers),
+          purchaseLog: mergeArraysById(dbVal.purchaseLog, incoming.purchaseLog),
+          products: mergeArraysById(dbVal.products, incoming.products)
+        };
+      });
     }
 
     // Restore foreign key checks

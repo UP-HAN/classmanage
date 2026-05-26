@@ -38,6 +38,20 @@
     if (selectedYear) {
       options.headers["X-Class-Year"] = selectedYear;
     }
+
+    // Inject session info for server-side smart merge
+    var C = global.ClassStatusCore;
+    if (C && typeof C.getSession === "function") {
+      var session = C.getSession();
+      if (session) {
+        if (session.role) {
+          options.headers["X-Session-Role"] = session.role;
+        }
+        if (session.studentId) {
+          options.headers["X-Session-Student-Id"] = session.studentId;
+        }
+      }
+    }
     
     return fetch(url, options).then(function (res) {
       if (!res.ok) {

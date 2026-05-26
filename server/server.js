@@ -1038,7 +1038,16 @@ app.post('/api/sync', async (req, res) => {
       let dbValStr = dbSettingsMap.get(key);
       let dbVal = null;
       if (dbValStr !== undefined && dbValStr !== null) {
-        dbVal = typeof dbValStr === 'string' ? JSON.parse(dbValStr) : dbValStr;
+        if (typeof dbValStr === 'string') {
+          try {
+            dbVal = JSON.parse(dbValStr);
+          } catch (e) {
+            console.error(`Failed to parse settings key ${key} value:`, dbValStr, e);
+            dbVal = dbValStr;
+          }
+        } else {
+          dbVal = dbValStr;
+        }
       }
       const mergedVal = mergeFunc(dbVal, incomingVal);
       await conn.query(

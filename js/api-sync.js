@@ -54,12 +54,24 @@
     }
     
     return fetch(url, options).then(function (res) {
-      if (!res.ok) {
-        return res.json().then(function (err) {
-          throw new Error(err.msg || "API 요청 실패");
-        });
-      }
-      return res.json();
+      return res.text().then(function (text) {
+        var isJson = false;
+        var data = null;
+        try {
+          data = JSON.parse(text);
+          isJson = true;
+        } catch (e) {}
+
+        if (!res.ok) {
+          var errMsg = (data && data.msg) ? data.msg : (text || "API 요청 실패");
+          if (typeof errMsg === "string" && errMsg.indexOf("<html") !== -1) {
+            errMsg = "서버 내부 오류 (Nginx/Gateway Error)";
+          }
+          throw new Error(errMsg);
+        }
+
+        return isJson ? data : text;
+      });
     });
   }
 

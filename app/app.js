@@ -3167,7 +3167,7 @@
       occurredAt: Date.now()
     });
     
-    saveDb(db);
+    saveDb(db, true);
     return { ok: true, msg: "매수가 완료되었습니다." };
   }
 
@@ -3248,7 +3248,7 @@
       occurredAt: Date.now()
     });
     
-    saveDb(db);
+    saveDb(db, true);
     return { ok: true, msg: "매도가 완료되었습니다." };
   }
 

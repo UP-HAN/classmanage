@@ -40,17 +40,24 @@ async function main() {
   const conn = await db.getConnection();
 
   try {
-    // 2. Find weekly wage logs on May 26th, 2026 to determine cutoff timestamp
-    console.log('>>> Locating weekly wage logs on May 26th, 2026...');
+    // 2. Find weekly wage logs that are not in the backup to determine cutoff timestamp
+    console.log('>>> Locating newly added weekly wage logs...');
     const [wageLogs] = await conn.query(
-      "SELECT occurred_at FROM activity_logs WHERE (summary LIKE '%주급%' OR summary LIKE '%은행%') AND occurred_at BETWEEN 1779600000000 AND 1779700000000"
+      "SELECT id, occurred_at, summary FROM activity_logs WHERE (summary LIKE '%주급%' OR summary LIKE '%은행%')"
     );
 
-    if (wageLogs.length === 0) {
-      throw new Error('No weekly wage logs found on May 26th, 2026 in the database.');
+    const newWageLogs = wageLogs.filter(l => !BACKUP_LOG_IDS.has(l.id));
+
+    if (newWageLogs.length === 0) {
+      console.log('All wage/bank logs in DB:');
+      for (const log of wageLogs) {
+        console.log(`  [${log.id}] ${new Date(Number(log.occurred_at)).toLocaleString()} | Summary: ${log.summary}`);
+      }
+      throw new Error('No newly added weekly wage logs found in the database. Please verify if the payroll was run.');
     }
 
-    const cutoffTimestamp = Math.max(...wageLogs.map(l => Number(l.occurred_at)));
+    console.log(`>>> Found ${newWageLogs.length} new wage logs.`);
+    const cutoffTimestamp = Math.max(...newWageLogs.map(l => Number(l.occurred_at)));
     console.log(`>>> Identified Cutoff Timestamp: ${cutoffTimestamp} (${new Date(cutoffTimestamp).toLocaleString()})`);
 
     // 3. Fetch current database state

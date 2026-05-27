@@ -25,6 +25,8 @@ async function main() {
 
   const backupStudents = backup.students || [];
   const backupStudentsMap = new Map(backupStudents.map(s => [s.id, s]));
+  const backupStudentsByNumberMap = new Map(backupStudents.map(s => [String(s.number), s]));
+  const backupStudentsByNameMap = new Map(backupStudents.map(s => [s.name, s]));
   const backupLogIds = new Set((backup.activityLogs || []).map(l => l.id).filter(Boolean));
 
   console.log('🔄 데이터베이스 연결 및 분석 중...');
@@ -51,7 +53,11 @@ async function main() {
     console.log('--------------------------------------------------');
 
     for (const st of students) {
-      const backupSt = backupStudentsMap.get(st.id);
+      let backupSt = backupStudentsMap.get(st.id);
+      if (!backupSt) {
+        // ID가 다를 경우 번호나 이름으로 2차 매핑 시도
+        backupSt = backupStudentsByNumberMap.get(String(st.number)) || backupStudentsByNameMap.get(st.name);
+      }
       const initialCalory = backupSt ? (parseInt(backupSt.calory, 10) || 0) : 0;
       
       const stLogs = studentLogsMap[st.id] || [];
@@ -75,9 +81,9 @@ async function main() {
       const discrepancy = st.calory - expectedCalory;
 
       if (discrepancy !== 0) {
-        // 최아현(#22)과 오주원(#13) 학생은 교사가 배당금으로 지급한 것이므로 보정에서 명시적으로 제외
-        if (st.number === 22 || st.number === 13 || String(st.number) === '22' || String(st.number) === '13') {
-          console.log(`[보호] #${st.number}\t${st.name}\t${st.calory} Cal\t(예상: ${expectedCalory} Cal, 교사 배당금으로 조정 제외)`);
+        // 최아현(#22), 오주원(#13), 황서진(#25) 학생은 보정에서 명시적으로 제외하고 보호 처리
+        if ([22, 13, 25].includes(Number(st.number)) || ['22', '13', '25'].includes(String(st.number))) {
+          console.log(`[보호] #${st.number}\t${st.name}\t${st.calory} Cal\t(예상: ${expectedCalory} Cal, 조정 제외 및 보호)`);
           continue;
         }
 

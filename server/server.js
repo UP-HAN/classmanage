@@ -666,12 +666,28 @@ app.post('/api/sync', async (req, res) => {
     const dbUsersMap = new Map(dbUsers.map(u => [u.id, u]));
 
     // Fetch all activity logs in the database to calculate transaction deltas for student calories and exp
-    const [dbLogs] = await conn.query('SELECT id, student_id, calory_delta, exp_delta FROM activity_logs');
-    const incomingLogIds = new Set((dbData.activityLogs || []).map(log => log.id).filter(Boolean));
+    const [dbLogs] = await conn.query('SELECT id, student_id, calory_delta, exp_delta, occurred_at FROM activity_logs');
+    const incomingLogs = Array.isArray(dbData.activityLogs) ? dbData.activityLogs : [];
+    const incomingLogIds = new Set(incomingLogs.map(log => log.id).filter(Boolean));
+    
+    // 클라이언트가 전송한 로그 중 가장 오래된 타임스탬프를 구합니다.
+    // 클라이언트가 최근 150개만 들고 있다면, 이 150개 중 가장 오래된 시점보다 더 과거의 로그는 
+    // 이미 반영이 완료되어 클라이언트에서 잘려나간 로그이므로 보정 대상에서 무시해야 합니다.
+    let oldestIncomingTime = Date.now();
+    if (incomingLogs.length > 0) {
+      const times = incomingLogs.map(log => Number(log.occurredAt)).filter(t => !isNaN(t));
+      if (times.length > 0) {
+        oldestIncomingTime = Math.min(...times);
+      }
+    }
+
     const studentCaloryDeltas = {};
     const studentExpDeltas = {};
     for (const log of dbLogs) {
-      if (!incomingLogIds.has(log.id) && log.student_id) {
+      const logOccurredAt = Number(log.occurred_at);
+      // DB의 로그 중 클라이언트 전송 목록에 없고, 
+      // 동시에 클라이언트의 가장 오래된 로그 시점 이후에 발생한 로그들만 "진짜 새로운 실시간 추가 로그"로 판정합니다.
+      if (!incomingLogIds.has(log.id) && log.student_id && logOccurredAt >= oldestIncomingTime) {
         const sid = log.student_id;
         if (!studentCaloryDeltas[sid]) studentCaloryDeltas[sid] = 0;
         studentCaloryDeltas[sid] += parseInt(log.calory_delta, 10) || 0;
@@ -690,7 +706,14 @@ app.post('/api/sync', async (req, res) => {
           const dbSt = dbStudentsMap.get(st.id);
           
           const caloryDelta = studentCaloryDeltas[st.id] || 0;
-          const caloryToSave = Math.max(0, (parseInt(st.calory, 10) || 0) + caloryDelta);
+          let caloryToSave = Math.max(0, (parseInt(st.calory, 10) || 0) + caloryDelta);
+
+          // [긴급 예외 보호망] 최아현(#22), 오주원(#13), 황서진(#25) 학생의 칼로리는 
+          // 교사 기기의 Stale(구버전) 캐시로 인해 다시 0원이나 낮은 금액으로 덮어써지는 것을 서버 단에서 강력히 방지합니다.
+          // 항상 DB의 현재 최신 값(이미 정상 복구되었거나 유지 중인 값)을 유지합니다.
+          if (dbSt && ([22, 13, 25].includes(Number(st.number)) || ['22', '13', '25'].includes(String(st.number)) || ['최아현', '오주원', '황서진'].includes(st.name))) {
+            caloryToSave = dbSt.calory;
+          }
 
           const expDelta = studentExpDeltas[st.id] || 0;
           const expToSave = Math.max(0, (parseInt(st.exp, 10) || 0) + expDelta);

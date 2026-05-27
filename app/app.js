@@ -2369,6 +2369,7 @@
       addActivityLog(db, {
         studentId: order.buyerStudentId,
         summary: "매점 주문 취소로 인한 Calory 환불 (+" + formatNum(order.priceCal) + " Cal)",
+        caloryDelta: order.priceCal,
         occurredAt: Date.now(),
       });
     }
@@ -2424,6 +2425,7 @@
       addActivityLog(db, {
         studentId: rental.studentId,
         summary: "쿠폰 구매 취소로 인한 Calory 환불 (+" + formatNum(price) + " Cal)",
+        caloryDelta: price,
         occurredAt: Date.now(),
       });
     }

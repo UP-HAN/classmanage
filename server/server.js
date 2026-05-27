@@ -665,6 +665,22 @@ app.post('/api/sync', async (req, res) => {
     const [dbUsers] = await conn.query('SELECT * FROM users');
     const dbUsersMap = new Map(dbUsers.map(u => [u.id, u]));
 
+    // Fetch all activity logs in the database to calculate transaction deltas for student calories and exp
+    const [dbLogs] = await conn.query('SELECT id, student_id, calory_delta, exp_delta FROM activity_logs');
+    const incomingLogIds = new Set((dbData.activityLogs || []).map(log => log.id).filter(Boolean));
+    const studentCaloryDeltas = {};
+    const studentExpDeltas = {};
+    for (const log of dbLogs) {
+      if (!incomingLogIds.has(log.id) && log.student_id) {
+        const sid = log.student_id;
+        if (!studentCaloryDeltas[sid]) studentCaloryDeltas[sid] = 0;
+        studentCaloryDeltas[sid] += parseInt(log.calory_delta, 10) || 0;
+
+        if (!studentExpDeltas[sid]) studentExpDeltas[sid] = 0;
+        studentExpDeltas[sid] += parseInt(log.exp_delta, 10) || 0;
+      }
+    }
+
     // 2. Sync Students
     if (isTeacher) {
       const incomingIds = new Set();
@@ -672,8 +688,18 @@ app.post('/api/sync', async (req, res) => {
         for (const st of dbData.students) {
           incomingIds.add(st.id);
           const dbSt = dbStudentsMap.get(st.id);
-          // Keep database stock_portfolio for existing students to prevent teacher cache overwrite
+          
+          const caloryDelta = studentCaloryDeltas[st.id] || 0;
+          const caloryToSave = Math.max(0, (parseInt(st.calory, 10) || 0) + caloryDelta);
+
+          const expDelta = studentExpDeltas[st.id] || 0;
+          const expToSave = Math.max(0, (parseInt(st.exp, 10) || 0) + expDelta);
+
+          // Keep database stock_portfolio, avatar_data_url, and avatar_custom for existing students
+          // to prevent teacher cache overwrite of student-managed properties
           const stockPortfolioToSave = dbSt ? dbSt.stock_portfolio : (st.stockPortfolio ? JSON.stringify(st.stockPortfolio) : null);
+          const avatarDataUrlToSave = dbSt ? dbSt.avatar_data_url : (st.avatarDataUrl || null);
+          const avatarCustomToSave = dbSt ? dbSt.avatar_custom : (st.avatarCustom || null);
           
           await conn.query(
             `INSERT INTO students (id, name, number, gender, lv, exp, calory, coupons, class_role, job_id, avatar_data_url, avatar_custom, stock_portfolio)
@@ -697,13 +723,13 @@ app.post('/api/sync', async (req, res) => {
               parseInt(st.number, 10) || 0,
               st.gender || 'female',
               parseInt(st.lv, 10) || 1,
-              parseInt(st.exp, 10) || 0,
-              parseInt(st.calory, 10) || 0,
+              expToSave,
+              caloryToSave,
               parseInt(st.coupons, 10) || 0,
               st.classRole || '',
               st.jobId || '',
-              st.avatarDataUrl || null,
-              st.avatarCustom || null,
+              avatarDataUrlToSave,
+              avatarCustomToSave,
               stockPortfolioToSave
             ]
           );

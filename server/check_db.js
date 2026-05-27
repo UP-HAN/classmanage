@@ -1,27 +1,32 @@
-const fs = require('fs');
-const path = require('path');
+const db = require('c:\\Users\\onizu\\OneDrive\\바탕 화면\\Workspace_Antigravity\\학급운영도구\\server\\db');
 
-function searchFile() {
-  const filePath = path.join(__dirname, '../app/app.js');
-  if (!fs.existsSync(filePath)) {
-    console.error('File not found:', filePath);
-    return;
-  }
-  const content = fs.readFileSync(filePath, 'utf8');
-  const lines = content.split('\n');
-  console.log(`Scanning app/app.js (${lines.length} lines)...`);
-
-  const matches = [];
-  lines.forEach((line, idx) => {
-    if (line.includes('setInterval') || line.includes('setTimeout')) {
-      matches.push({ lineNum: idx + 1, line: line.trim() });
+async function main() {
+  console.log('Connecting to database...');
+  const conn = await db.getConnection();
+  try {
+    const [settings] = await conn.query("SELECT * FROM settings WHERE `key` = 'stockMarket'");
+    console.log('\n=== STOCK MARKET SETTINGS ===');
+    if (settings.length > 0) {
+      let val = settings[0].value;
+      if (typeof val === 'string') {
+        try { val = JSON.parse(val); } catch(e) {}
+      }
+      console.log(val);
+    } else {
+      console.log('Not found');
     }
-  });
 
-  console.log(`Found ${matches.length} timer lines:`);
-  matches.forEach(m => {
-    console.log(`[L${m.lineNum}] ${m.line}`);
-  });
+    const [students] = await conn.query("SELECT id, name, number, calory, stock_portfolio FROM students");
+    console.log('\n=== STUDENTS PORTFOLIO AND CALORY ===');
+    students.forEach(st => {
+      console.log(`#${st.number} ${st.name}: Calory=${st.calory} Cal, Portfolio=${st.stock_portfolio}`);
+    });
+  } catch (err) {
+    console.error('Error:', err);
+  } finally {
+    conn.release();
+    process.exit(0);
+  }
 }
 
-searchFile();
+main();

@@ -31,6 +31,15 @@ async function main() {
   const conn = await db.getConnection();
 
   try {
+    // [동적 스키마 마이그레이션] activity_logs 테이블에 is_synced 컬럼이 없으면 자동 생성
+    const [logColumns] = await conn.query("SHOW COLUMNS FROM activity_logs LIKE 'is_synced'");
+    if (logColumns.length === 0) {
+      console.log('⚙️ [Schema Migration] activity_logs 테이블에 is_synced 컬럼이 없습니다. 추가를 시작합니다.');
+      await conn.query("ALTER TABLE activity_logs ADD COLUMN is_synced TINYINT DEFAULT 0");
+      await conn.query("UPDATE activity_logs SET is_synced = 1");
+      console.log('✅ [Schema Migration] is_synced 컬럼 추가 및 기존 로그 초기화 완료!');
+    }
+
     const [students] = await conn.query('SELECT id, name, number, calory FROM students');
     const [logs] = await conn.query('SELECT id, student_id, calory_delta, summary, occurred_at FROM activity_logs ORDER BY occurred_at ASC');
     
@@ -93,6 +102,11 @@ async function main() {
       await conn.query('UPDATE students SET calory = ? WHERE id = ?', [expectedCalory, st.id]);
       console.log(`✅ [#${st.number} ${st.name}] 복구 완료: ${st.calory} Cal ➡️ ${expectedCalory} Cal (백업 시작: ${initialCalory} Cal, 변동량: ${sumNewDeltas} Cal)`);
     }
+
+    // 복구가 완료된 시점이므로, DB에 있는 모든 기존 activity_logs들을 is_synced = 1로 마킹합니다.
+    // 이를 통해 이 시점 이전의 모든 로그들이 다음 동기화 계산에 다시 가산되는 것을 완전히 차단합니다.
+    await conn.query('UPDATE activity_logs SET is_synced = 1');
+    console.log('✅ 모든 기존 활동 로그들의 동기화 상태(is_synced = 1)를 강제 초기화 완료했습니다!');
 
     await conn.commit();
     console.log('\n🎉 전교생 잔액 복구가 완료되었습니다!');

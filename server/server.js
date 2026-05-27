@@ -42,11 +42,22 @@ loadActiveYear();
 // === Schema Migration Safety Check ===
 async function checkAndMigrateSchema() {
   try {
+    // 1. stock_portfolio 컬럼 체크 및 추가
     const [columns] = await db.query("SHOW COLUMNS FROM students LIKE 'stock_portfolio'");
     if (columns.length === 0) {
       console.log('[Schema Migration] students 테이블에 stock_portfolio 컬럼이 없습니다. 동적 추가를 시작합니다.');
       await db.query("ALTER TABLE students ADD COLUMN stock_portfolio MEDIUMTEXT DEFAULT NULL");
       console.log('[Schema Migration] students 테이블에 stock_portfolio 컬럼이 성공적으로 추가되었습니다!');
+    }
+
+    // 2. activity_logs 테이블에 is_synced 컬럼 체크 및 추가
+    const [logColumns] = await db.query("SHOW COLUMNS FROM activity_logs LIKE 'is_synced'");
+    if (logColumns.length === 0) {
+      console.log('[Schema Migration] activity_logs 테이블에 is_synced 컬럼이 없습니다. 추가를 시작합니다.');
+      await db.query("ALTER TABLE activity_logs ADD COLUMN is_synced TINYINT DEFAULT 0");
+      // 기존에 존재하던 모든 로그는 이미 동기화가 반영된 것으로 간주하여 1로 일괄 업데이트!
+      await db.query("UPDATE activity_logs SET is_synced = 1");
+      console.log('[Schema Migration] activity_logs 테이블에 is_synced 컬럼 추가 및 기존 로그 초기화 완료!');
     }
   } catch (err) {
     console.error('[Schema Migration] 스키마 동적 검증 및 추가 중 에러 발생:', err);
@@ -665,35 +676,23 @@ app.post('/api/sync', async (req, res) => {
     const [dbUsers] = await conn.query('SELECT * FROM users');
     const dbUsersMap = new Map(dbUsers.map(u => [u.id, u]));
 
-    // Fetch all activity logs in the database to calculate transaction deltas for student calories and exp
-    const [dbLogs] = await conn.query('SELECT id, student_id, calory_delta, exp_delta, occurred_at FROM activity_logs');
-    const incomingLogs = Array.isArray(dbData.activityLogs) ? dbData.activityLogs : [];
-    const incomingLogIds = new Set(incomingLogs.map(log => log.id).filter(Boolean));
+    // DB에서 아직 교사 동기화에 반영되지 않은(is_synced = 0) 활동 로그들만 가져와서 델타를 계산합니다.
+    const [dbLogs] = await conn.query('SELECT id, student_id, calory_delta, exp_delta FROM activity_logs WHERE is_synced = 0');
     
-    // 클라이언트가 전송한 로그 중 가장 오래된 타임스탬프를 구합니다.
-    // 클라이언트가 최근 150개만 들고 있다면, 이 150개 중 가장 오래된 시점보다 더 과거의 로그는 
-    // 이미 반영이 완료되어 클라이언트에서 잘려나간 로그이므로 보정 대상에서 무시해야 합니다.
-    let oldestIncomingTime = Date.now();
-    if (incomingLogs.length > 0) {
-      const times = incomingLogs.map(log => Number(log.occurredAt)).filter(t => !isNaN(t));
-      if (times.length > 0) {
-        oldestIncomingTime = Math.min(...times);
-      }
-    }
-
     const studentCaloryDeltas = {};
     const studentExpDeltas = {};
+    const appliedLogIds = [];
+
     for (const log of dbLogs) {
-      const logOccurredAt = Number(log.occurred_at);
-      // DB의 로그 중 클라이언트 전송 목록에 없고, 
-      // 동시에 클라이언트의 가장 오래된 로그 시점 이후에 발생한 로그들만 "진짜 새로운 실시간 추가 로그"로 판정합니다.
-      if (!incomingLogIds.has(log.id) && log.student_id && logOccurredAt >= oldestIncomingTime) {
+      if (log.student_id) {
         const sid = log.student_id;
         if (!studentCaloryDeltas[sid]) studentCaloryDeltas[sid] = 0;
         studentCaloryDeltas[sid] += parseInt(log.calory_delta, 10) || 0;
 
         if (!studentExpDeltas[sid]) studentExpDeltas[sid] = 0;
         studentExpDeltas[sid] += parseInt(log.exp_delta, 10) || 0;
+        
+        appliedLogIds.push(log.id);
       }
     }
 
@@ -1204,6 +1203,11 @@ app.post('/api/sync', async (req, res) => {
           products: mergeArraysById(dbVal.products, incoming.products)
         };
       });
+    }
+
+    // 반영된 활동 로그들을 is_synced = 1로 마킹하여 중복 반영 방지
+    if (appliedLogIds.length > 0) {
+      await conn.query('UPDATE activity_logs SET is_synced = 1 WHERE id IN (?)', [appliedLogIds]);
     }
 
     // Restore foreign key checks

@@ -112,26 +112,8 @@ async function main() {
         const expectedCalory = Math.max(0, initialCalory + sumCleanDeltas);
         const discrepancy = expectedCalory - st.calory; // discrepancy to apply (expected - current)
 
-        // Protect students Oh (#13), Choi (#22), Hwang (#25) from cash correction
-        if ([22, 13, 25].includes(Number(st.number)) || ['22', '13', '25'].includes(String(st.number))) {
-          console.log(`[보호] #${st.number}\t${st.name}\t${st.calory} Cal\t(예상: ${expectedCalory} Cal, 현금 잔액 강제 보정 보호 대상)`);
-          // Even though cash is protected, we STILL save expectedCalory in correction details to print 
-          // but we won't correct cash if the policy says skip. 
-          // Wait! For clean reset, they shouldn't keep duplicated cash. But since their cash in DB is already protected:
-          // 최아현 current: 850, expected: 1820. 오주원 current: 380, expected: 1160. 황서진 current: 0, expected: 810.
-          // If we protect them, they will be left with 850, 380, 0 Cal and no stocks.
-          // Let's print their status clearly.
-          corrections.push({
-            id: st.id,
-            name: st.name,
-            number: st.number,
-            correctCalory: expectedCalory,
-            currentCalory: st.calory,
-            discrepancy: discrepancy,
-            protected: true
-          });
-          continue;
-        }
+        // No longer skipping Oh (#13), Choi (#22), Hwang (#25) for cash correction in clean stock reset.
+        // We want them to get their true expected non-stock wages and tax balances too.
 
         console.log(`#${st.number}\t${st.name}\t${st.calory} Cal\t${sumCleanDeltas >= 0 ? '+' : ''}${sumCleanDeltas} Cal\t➡️  ${expectedCalory} Cal\t\t${discrepancy >= 0 ? '+' : ''}${discrepancy} Cal`);
         

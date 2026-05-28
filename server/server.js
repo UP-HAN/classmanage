@@ -1256,6 +1256,351 @@ app.get('/api/stocks/prices', async (req, res) => {
   });
 });
 
+// POST /api/stocks/buy - Buy stock atomically on the server
+app.post('/api/stocks/buy', async (req, res) => {
+  const studentId = req.headers['x-session-student-id'];
+  if (!studentId) {
+    return res.status(401).json({ ok: false, msg: '학생 세션 정보가 없습니다.' });
+  }
+
+  const { code, mode, amount } = req.body;
+  if (!code || !mode || !amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+    return res.status(400).json({ ok: false, msg: '올바른 매수 요청 매개변수가 아닙니다.' });
+  }
+
+  if (mode !== 'kcal' && mode !== 'shares') {
+    return res.status(400).json({ ok: false, msg: '잘못된 매수 유형입니다.' });
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1. Fetch student with row lock
+    const [students] = await conn.query('SELECT * FROM students WHERE id = ? FOR UPDATE', [studentId]);
+    if (students.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '학생을 찾을 수 없습니다.' });
+    }
+    const st = students[0];
+
+    // 2. Fetch stockMarket settings with row lock
+    const [settings] = await conn.query("SELECT `value` FROM settings WHERE `key` = 'stockMarket' FOR UPDATE");
+    if (settings.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '주식 시장 설정이 존재하지 않습니다.' });
+    }
+    let stockMarket = settings[0].value;
+    if (typeof stockMarket === 'string') {
+      try { stockMarket = JSON.parse(stockMarket); } catch (e) {}
+    }
+
+    if (!stockMarket || !stockMarket.enabled) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '주식 모의투자 거래가 활성화되어 있지 않습니다.' });
+    }
+
+    const stock = (stockMarket.stocks || []).find(s => s.code === code);
+    if (!stock) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '존재하지 않는 주식 종목입니다.' });
+    }
+
+    // 3. Get current price
+    const priceInfo = cachedStockPrices[code];
+    if (!priceInfo || typeof priceInfo.price !== 'number') {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '실시간 시세가 동기화되지 않았습니다. 잠시 후 다시 시도해 주세요.' });
+    }
+
+    // 4. Calculate display (leveraged) price
+    const basePrice = (stock.basePrice !== undefined && stock.basePrice !== null) ? stock.basePrice : (priceInfo.stck_sdpr || priceInfo.price);
+    const multiplier = typeof stockMarket.multiplier === 'number' ? stockMarket.multiplier : 1;
+    const priceKrw = Math.max(100, Math.round(basePrice + (priceInfo.price - basePrice) * multiplier));
+    const priceKcal = priceKrw / 10000;
+
+    if (priceKcal <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '올바르지 않은 주식 가격입니다.' });
+    }
+
+    // 5. Calculate buy calories and shares
+    let buyKcal = 0;
+    let buyShares = 0;
+    const reqAmount = parseFloat(amount);
+
+    if (mode === 'kcal') {
+      buyKcal = reqAmount;
+      buyShares = buyKcal / priceKcal;
+    } else {
+      buyShares = reqAmount;
+      buyKcal = buyShares * priceKcal;
+    }
+
+    buyKcal = Math.round(buyKcal * 100) / 100;
+    buyShares = Math.round(buyShares * 10000) / 10000;
+
+    // 6. Check balance
+    if (st.calory < buyKcal) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '보유 칼로리(kcal)가 부족합니다.' });
+    }
+
+    const newCalory = Math.round((st.calory - buyKcal) * 100) / 100;
+
+    // 7. Update portfolio
+    let portfolio = {};
+    if (st.stock_portfolio) {
+      try {
+        portfolio = typeof st.stock_portfolio === 'string' ? JSON.parse(st.stock_portfolio) : st.stock_portfolio;
+      } catch (e) {
+        portfolio = {};
+      }
+    }
+    if (!portfolio || typeof portfolio !== 'object') {
+      portfolio = {};
+    }
+    if (!portfolio.holdings || typeof portfolio.holdings !== 'object') {
+      portfolio.holdings = {};
+    }
+
+    let holding = portfolio.holdings[code];
+    if (!holding) {
+      holding = { amount: 0, avgPriceKcal: 0 };
+    }
+
+    const prevAmount = holding.amount || 0;
+    const prevAvg = holding.avgPriceKcal || 0;
+
+    const newAmount = Math.round((prevAmount + buyShares) * 10000) / 10000;
+    let newAvg = 0;
+    if (newAmount > 0) {
+      newAvg = ((prevAmount * prevAvg) + (buyShares * priceKcal)) / newAmount;
+      newAvg = Math.round(newAvg * 10000) / 10000;
+    }
+
+    holding.amount = newAmount;
+    holding.avgPriceKcal = newAvg;
+    portfolio.holdings[code] = holding;
+
+    // 8. Update database
+    await conn.query('UPDATE students SET calory = ?, stock_portfolio = ? WHERE id = ?', [newCalory, JSON.stringify(portfolio), studentId]);
+
+    // 9. Write activity log (mark is_synced = 1)
+    const logId = 'log-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
+    const occurredAt = Date.now();
+    const summaryText = `주식 매수: ${stock.name} (${code}) ${buyShares}주 매수`;
+    await conn.query(
+      'INSERT INTO activity_logs (id, student_id, occurred_at, summary, exp_delta, calory_delta, is_synced) VALUES (?, ?, ?, ?, 0, ?, 1)',
+      [logId, studentId, occurredAt, summaryText, -buyKcal]
+    );
+
+    // 10. Write trade log into settings
+    if (!Array.isArray(stockMarket.tradeLog)) stockMarket.tradeLog = [];
+    const tradeId = 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+    stockMarket.tradeLog.unshift({
+      id: tradeId,
+      studentId: studentId,
+      studentName: st.name,
+      code: code,
+      name: stock.name,
+      type: 'buy',
+      shares: buyShares,
+      priceKcal: priceKcal,
+      priceKrw: priceKrw,
+      totalKcal: buyKcal,
+      occurredAt: occurredAt
+    });
+
+    if (stockMarket.tradeLog.length > 200) {
+      stockMarket.tradeLog = stockMarket.tradeLog.slice(0, 200);
+    }
+    await conn.query("UPDATE settings SET `value` = ? WHERE `key` = 'stockMarket'", [JSON.stringify(stockMarket)]);
+
+    await conn.commit();
+    return res.json({ ok: true, msg: '매수가 완료되었습니다.' });
+
+  } catch (error) {
+    await conn.rollback();
+    console.error('[StockMarket Server] 매수 에러:', error);
+    return res.status(500).json({ ok: false, msg: '매수 처리 중 서버 에러가 발생했습니다.' });
+  } finally {
+    conn.release();
+  }
+});
+
+// POST /api/stocks/sell - Sell stock atomically on the server
+app.post('/api/stocks/sell', async (req, res) => {
+  const studentId = req.headers['x-session-student-id'];
+  if (!studentId) {
+    return res.status(401).json({ ok: false, msg: '학생 세션 정보가 없습니다.' });
+  }
+
+  const { code, mode, amount } = req.body;
+  if (!code || !mode || !amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+    return res.status(400).json({ ok: false, msg: '올바른 매도 요청 매개변수가 아닙니다.' });
+  }
+
+  if (mode !== 'kcal' && mode !== 'shares') {
+    return res.status(400).json({ ok: false, msg: '잘못된 매도 유형입니다.' });
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1. Fetch student with row lock
+    const [students] = await conn.query('SELECT * FROM students WHERE id = ? FOR UPDATE', [studentId]);
+    if (students.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '학생을 찾을 수 없습니다.' });
+    }
+    const st = students[0];
+
+    // 2. Fetch student portfolio
+    let portfolio = {};
+    if (st.stock_portfolio) {
+      try {
+        portfolio = typeof st.stock_portfolio === 'string' ? JSON.parse(st.stock_portfolio) : st.stock_portfolio;
+      } catch (e) {
+        portfolio = {};
+      }
+    }
+    if (!portfolio || typeof portfolio !== 'object' || !portfolio.holdings || typeof portfolio.holdings !== 'object') {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '보유하고 있지 않은 종목입니다.' });
+    }
+
+    let holding = portfolio.holdings[code];
+    if (!holding || holding.amount <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '보유하고 있지 않은 종목입니다.' });
+    }
+
+    // 3. Fetch stockMarket settings with row lock
+    const [settings] = await conn.query("SELECT `value` FROM settings WHERE `key` = 'stockMarket' FOR UPDATE");
+    if (settings.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '주식 시장 설정이 존재하지 않습니다.' });
+    }
+    let stockMarket = settings[0].value;
+    if (typeof stockMarket === 'string') {
+      try { stockMarket = JSON.parse(stockMarket); } catch (e) {}
+    }
+
+    if (!stockMarket || !stockMarket.enabled) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '주식 모의투자 거래가 활성화되어 있지 않습니다.' });
+    }
+
+    const stock = (stockMarket.stocks || []).find(s => s.code === code);
+    if (!stock) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '존재하지 않는 주식 종목입니다.' });
+    }
+
+    // 4. Get current price
+    const priceInfo = cachedStockPrices[code];
+    if (!priceInfo || typeof priceInfo.price !== 'number') {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '실시간 시세가 동기화되지 않았습니다. 잠시 후 다시 시도해 주세요.' });
+    }
+
+    // 5. Calculate display (leveraged) price
+    const basePrice = (stock.basePrice !== undefined && stock.basePrice !== null) ? stock.basePrice : (priceInfo.stck_sdpr || priceInfo.price);
+    const multiplier = typeof stockMarket.multiplier === 'number' ? stockMarket.multiplier : 1;
+    const priceKrw = Math.max(100, Math.round(basePrice + (priceInfo.price - basePrice) * multiplier));
+    const priceKcal = priceKrw / 10000;
+
+    if (priceKcal <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ ok: false, msg: '올바르지 않은 주식 가격입니다.' });
+    }
+
+    // 6. Calculate sell calories and shares
+    let sellKcal = 0;
+    let sellShares = 0;
+    const reqAmount = parseFloat(amount);
+
+    if (mode === 'kcal') {
+      sellKcal = reqAmount;
+      sellShares = sellKcal / priceKcal;
+    } else {
+      sellShares = reqAmount;
+      sellKcal = sellShares * priceKcal;
+    }
+
+    sellKcal = Math.round(sellKcal * 100) / 100;
+    sellShares = Math.round(sellShares * 10000) / 10000;
+
+    // 7. Check shares balance
+    if (holding.amount < sellShares) {
+      if (Math.abs(holding.amount - sellShares) < 0.0002) {
+        sellShares = holding.amount;
+        sellKcal = Math.round(sellShares * priceKcal * 100) / 100;
+      } else {
+        await conn.rollback();
+        return res.status(400).json({ ok: false, msg: '보유한 수량보다 많이 매도할 수 없습니다.' });
+      }
+    }
+
+    const newCalory = Math.round((st.calory + sellKcal) * 100) / 100;
+    const remainingShares = Math.round((holding.amount - sellShares) * 10000) / 10000;
+
+    if (remainingShares <= 0) {
+      delete portfolio.holdings[code];
+    } else {
+      holding.amount = remainingShares;
+      portfolio.holdings[code] = holding;
+    }
+
+    // 8. Update database
+    await conn.query('UPDATE students SET calory = ?, stock_portfolio = ? WHERE id = ?', [newCalory, JSON.stringify(portfolio), studentId]);
+
+    // 9. Write activity log (mark is_synced = 1)
+    const logId = 'log-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
+    const occurredAt = Date.now();
+    const summaryText = `주식 매도: ${stock.name} (${code}) ${sellShares}주 매도`;
+    await conn.query(
+      'INSERT INTO activity_logs (id, student_id, occurred_at, summary, exp_delta, calory_delta, is_synced) VALUES (?, ?, ?, ?, 0, ?, 1)',
+      [logId, studentId, occurredAt, summaryText, sellKcal]
+    );
+
+    // 10. Write trade log into settings
+    if (!Array.isArray(stockMarket.tradeLog)) stockMarket.tradeLog = [];
+    const tradeId = 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+    stockMarket.tradeLog.unshift({
+      id: tradeId,
+      studentId: studentId,
+      studentName: st.name,
+      code: code,
+      name: stock.name,
+      type: 'sell',
+      shares: sellShares,
+      priceKcal: priceKcal,
+      priceKrw: priceKrw,
+      totalKcal: sellKcal,
+      occurredAt: occurredAt
+    });
+
+    if (stockMarket.tradeLog.length > 200) {
+      stockMarket.tradeLog = stockMarket.tradeLog.slice(0, 200);
+    }
+    await conn.query("UPDATE settings SET `value` = ? WHERE `key` = 'stockMarket'", [JSON.stringify(stockMarket)]);
+
+    await conn.commit();
+    return res.json({ ok: true, msg: '매도가 완료되었습니다.' });
+
+  } catch (error) {
+    await conn.rollback();
+    console.error('[StockMarket Server] 매도 에러:', error);
+    return res.status(500).json({ ok: false, msg: '매도 처리 중 서버 에러가 발생했습니다.' });
+  } finally {
+    conn.release();
+  }
+});
+
+
 // === Class Year Management APIs ===
 
 // 1. GET /api/years - List all class years and the current active year

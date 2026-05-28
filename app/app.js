@@ -3089,179 +3089,41 @@
   }
 
   function buyStock(db, studentId, code, mode, amount) {
-    ensureStockMarket(db);
-    var st = getStudent(db, studentId);
-    if (!st) return { ok: false, msg: "학생을 찾을 수 없습니다." };
-    ensureStudentStockPortfolio(st);
-    
-    var stock = db.stockMarket.stocks.find(function(s) { return s.code === code; });
-    if (!stock) return { ok: false, msg: "존재하지 않는 종목입니다." };
-    
-    var priceInfo = window.currentStockPrices && window.currentStockPrices[code];
-    if (!priceInfo || typeof priceInfo.price !== "number") {
-      return { ok: false, msg: "실시간 시세가 동기화되지 않았습니다. 잠시 후 다시 시도해 주세요." };
+    if (!ClassStatusServer.isServerCloudEnabled()) {
+      return Promise.resolve({ ok: false, msg: "서버 연결이 필요합니다. 오프라인 모드에서는 주식을 구매할 수 없습니다." });
     }
-    
-    var priceKrw = priceInfo.price;
-    var priceKcal = priceKrw / 10000;
-    if (priceKcal <= 0) return { ok: false, msg: "올바르지 않은 주식 가격입니다." };
-    
-    var buyKcal = 0;
-    var buyShares = 0;
-    
-    if (mode === "kcal") {
-      buyKcal = parseFloat(amount);
-      if (isNaN(buyKcal) || buyKcal <= 0) return { ok: false, msg: "올바른 매수 금액을 입력해 주세요." };
-      buyShares = buyKcal / priceKcal;
-    } else if (mode === "shares") {
-      buyShares = parseFloat(amount);
-      if (isNaN(buyShares) || buyShares <= 0) return { ok: false, msg: "올바른 매수 수량을 입력해 주세요." };
-      buyKcal = buyShares * priceKcal;
-    } else {
-      return { ok: false, msg: "잘못된 매수 유형입니다." };
-    }
-    
-    buyKcal = Math.round(buyKcal * 100) / 100;
-    buyShares = Math.round(buyShares * 10000) / 10000;
-    
-    if (st.calory < buyKcal) {
-      return { ok: false, msg: "보유 칼로리(kcal)가 부족합니다." };
-    }
-    
-    st.calory = Math.round((st.calory - buyKcal) * 100) / 100;
-    
-    var holding = st.stockPortfolio.holdings[code];
-    if (!holding) {
-      holding = { amount: 0, avgPriceKcal: 0 };
-      st.stockPortfolio.holdings[code] = holding;
-    }
-    
-    var prevAmount = holding.amount;
-    var prevAvg = holding.avgPriceKcal;
-    
-    var newAmount = Math.round((prevAmount + buyShares) * 10000) / 10000;
-    var newAvg = 0;
-    if (newAmount > 0) {
-      newAvg = ((prevAmount * prevAvg) + (buyShares * priceKcal)) / newAmount;
-      newAvg = Math.round(newAvg * 10000) / 10000;
-    }
-    
-    holding.amount = newAmount;
-    holding.avgPriceKcal = newAvg;
-    
-    addActivityLog(db, {
-      studentId: st.id,
-      summary: "주식 매수: " + stock.name + " (" + code + ") " + buyShares + "주 매수",
-      caloryDelta: -buyKcal
-    });
-    
-    db.stockMarket.tradeLog.unshift({
-      id: C.uid(),
-      studentId: st.id,
-      studentName: st.name,
-      code: code,
-      name: stock.name,
-      type: "buy",
-      shares: buyShares,
-      priceKcal: priceKcal,
-      priceKrw: priceKrw,
-      totalKcal: buyKcal,
-      occurredAt: Date.now()
-    });
-    
-    return saveDb(db, true).then(function() {
-      return { ok: true, msg: "매수가 완료되었습니다." };
-    }).catch(function(err) {
-      console.error("[StockMarket] 매수 동기화 실패:", err);
-      var serverErrMsg = err && err.message ? err.message : "인터넷 연결을 확인하세요";
-      return { ok: false, msg: "서버 동기화에 실패하여 매수를 진행할 수 없습니다. (" + serverErrMsg + ")" };
-    });
+    return ClassStatusServer.buyStock(code, mode, amount)
+      .then(function(res) {
+        if (res && res.ok) {
+          return ClassStatusServer.syncStudentsFromRemote().then(function() {
+            return { ok: true, msg: "매수가 완료되었습니다." };
+          });
+        }
+        return { ok: false, msg: (res && res.msg) || "매수에 실패했습니다." };
+      })
+      .catch(function(err) {
+        console.error("[StockMarket] 매수 오류:", err);
+        return { ok: false, msg: "매수 중 오류가 발생했습니다: " + err.message };
+      });
   }
 
   function sellStock(db, studentId, code, mode, amount) {
-    ensureStockMarket(db);
-    var st = getStudent(db, studentId);
-    if (!st) return { ok: false, msg: "학생을 찾을 수 없습니다." };
-    ensureStudentStockPortfolio(st);
-    
-    var stock = db.stockMarket.stocks.find(function(s) { return s.code === code; });
-    if (!stock) return { ok: false, msg: "존재하지 않는 종목입니다." };
-    
-    var holding = st.stockPortfolio.holdings[code];
-    if (!holding || holding.amount <= 0) return { ok: false, msg: "보유하고 있지 않은 종목입니다." };
-    
-    var priceInfo = window.currentStockPrices && window.currentStockPrices[code];
-    if (!priceInfo || typeof priceInfo.price !== "number") {
-      return { ok: false, msg: "실시간 시세가 동기화되지 않았습니다. 잠시 후 다시 시도해 주세요." };
+    if (!ClassStatusServer.isServerCloudEnabled()) {
+      return Promise.resolve({ ok: false, msg: "서버 연결이 필요합니다. 오프라인 모드에서는 주식을 매도할 수 없습니다." });
     }
-    
-    var priceKrw = priceInfo.price;
-    var priceKcal = priceKrw / 10000;
-    if (priceKcal <= 0) return { ok: false, msg: "올바르지 않은 주식 가격입니다." };
-    
-    var sellKcal = 0;
-    var sellShares = 0;
-    
-    if (mode === "kcal") {
-      sellKcal = parseFloat(amount);
-      if (isNaN(sellKcal) || sellKcal <= 0) return { ok: false, msg: "올바른 매도 금액을 입력해 주세요." };
-      sellShares = sellKcal / priceKcal;
-    } else if (mode === "shares") {
-      sellShares = parseFloat(amount);
-      if (isNaN(sellShares) || sellShares <= 0) return { ok: false, msg: "올바른 매도 수량을 입력해 주세요." };
-      sellKcal = sellShares * priceKcal;
-    } else {
-      return { ok: false, msg: "잘못된 매도 유형입니다." };
-    }
-    
-    sellKcal = Math.round(sellKcal * 100) / 100;
-    sellShares = Math.round(sellShares * 10000) / 10000;
-    
-    if (holding.amount < sellShares) {
-      if (Math.abs(holding.amount - sellShares) < 0.0002) {
-        sellShares = holding.amount;
-        sellKcal = Math.round(sellShares * priceKcal * 100) / 100;
-      } else {
-        return { ok: false, msg: "보유한 수량(" + holding.amount + "주)보다 많이 매도할 수 없습니다." };
-      }
-    }
-    
-    st.calory = Math.round((st.calory + sellKcal) * 100) / 100;
-    
-    var remainingShares = Math.round((holding.amount - sellShares) * 10000) / 10000;
-    if (remainingShares <= 0) {
-      delete st.stockPortfolio.holdings[code];
-    } else {
-      holding.amount = remainingShares;
-    }
-    
-    addActivityLog(db, {
-      studentId: st.id,
-      summary: "주식 매도: " + stock.name + " (" + code + ") " + sellShares + "주 매도",
-      caloryDelta: sellKcal
-    });
-    
-    db.stockMarket.tradeLog.unshift({
-      id: C.uid(),
-      studentId: st.id,
-      studentName: st.name,
-      code: code,
-      name: stock.name,
-      type: "sell",
-      shares: sellShares,
-      priceKcal: priceKcal,
-      priceKrw: priceKrw,
-      totalKcal: sellKcal,
-      occurredAt: Date.now()
-    });
-    
-    return saveDb(db, true).then(function() {
-      return { ok: true, msg: "매도가 완료되었습니다." };
-    }).catch(function(err) {
-      console.error("[StockMarket] 매도 동기화 실패:", err);
-      var serverErrMsg = err && err.message ? err.message : "인터넷 연결을 확인하세요";
-      return { ok: false, msg: "서버 동기화에 실패하여 매도를 진행할 수 없습니다. (" + serverErrMsg + ")" };
-    });
+    return ClassStatusServer.sellStock(code, mode, amount)
+      .then(function(res) {
+        if (res && res.ok) {
+          return ClassStatusServer.syncStudentsFromRemote().then(function() {
+            return { ok: true, msg: "매도가 완료되었습니다." };
+          });
+        }
+        return { ok: false, msg: (res && res.msg) || "매도에 실패했습니다." };
+      })
+      .catch(function(err) {
+        console.error("[StockMarket] 매도 오류:", err);
+        return { ok: false, msg: "매도 중 오류가 발생했습니다: " + err.message };
+      });
   }
 
   function cloneStatsPayload(obj) {

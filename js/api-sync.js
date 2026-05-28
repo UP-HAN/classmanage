@@ -167,6 +167,22 @@
     });
   }
 
+  function buyStock(code, mode, amount) {
+    if (!isServerCloudEnabled()) return Promise.reject(new Error("Cloud server not enabled"));
+    return fetchFromApi("/api/stocks/buy", {
+      method: "POST",
+      body: JSON.stringify({ code: code, mode: mode, amount: amount })
+    });
+  }
+
+  function sellStock(code, mode, amount) {
+    if (!isServerCloudEnabled()) return Promise.reject(new Error("Cloud server not enabled"));
+    return fetchFromApi("/api/stocks/sell", {
+      method: "POST",
+      body: JSON.stringify({ code: code, mode: mode, amount: amount })
+    });
+  }
+
   global.ClassStatusServer = {
     isServerCloudEnabled: isServerCloudEnabled,
     login: login,
@@ -176,7 +192,10 @@
     isSyncEnabled: isSyncActive,
     getYearsList: getYearsList,
     createYear: createYear,
-    setActiveYear: setActiveYear
+    setActiveYear: setActiveYear,
+    buyStock: buyStock,
+    sellStock: sellStock
   };
 })(typeof window !== "undefined" ? window : this);
+
 

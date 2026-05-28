@@ -36,118 +36,139 @@ const BACKUP_LOG_IDS = new Set([
 ]);
 
 async function main() {
-  const targetDb = process.env.DB_NAME || 'class_tool';
-  console.log(`\n=============================================`);
-  console.log(`🔄 [DB Analyzer] Connecting to database: ${targetDb}`);
-  console.log(`=============================================\n`);
+  let targetDb = process.env.DB_NAME || 'class_tool';
   
-  const conn = await db.getConnection();
-
-  try {
-    const [students] = await conn.query('SELECT id, name, number, calory FROM students');
-    const [logs] = await conn.query('SELECT id, student_id, calory_delta, summary, occurred_at FROM activity_logs ORDER BY occurred_at ASC');
-
-    // Group logs by student
-    const studentLogsMap = {};
-    for (const log of logs) {
-      if (log.student_id) {
-        if (!studentLogsMap[log.student_id]) {
-          studentLogsMap[log.student_id] = [];
+  if (!process.env.DB_NAME) {
+    const defaultPool = db.getPool('class_tool');
+    try {
+      const [rows] = await defaultPool.query("SELECT `value` FROM settings WHERE `key` = 'activeYear'");
+      if (rows.length > 0) {
+        let val = rows[0].value;
+        if (typeof val === 'string') {
+          try { val = JSON.parse(val); } catch (e) {}
         }
-        studentLogsMap[log.student_id].push(log);
+        if (val && /^\d{4}$/.test(val)) {
+          targetDb = `class_tool_${val}`;
+        }
       }
+    } catch (e) {
+      // settings table might not exist in class_tool
     }
-
-    const corrections = [];
-    console.log('----------------------------------------------------------------------');
-    console.log('번호\t이름\t현재 잔액\t예상 잔액\t차액(복사된 현금)');
-    console.log('----------------------------------------------------------------------');
-
-    for (const st of students) {
-      const backupSt = BACKUP_STUDENTS[st.name];
-      const initialCalory = backupSt ? (parseInt(backupSt.calory, 10) || 0) : 0;
-      
-      const stLogs = studentLogsMap[st.id] || [];
-      // Filter out baseline logs
-      const newLogs = stLogs.filter(log => !BACKUP_LOG_IDS.has(log.id));
-      
-      let sumNewDeltas = 0;
-      for (const log of newLogs) {
-        let delta = parseInt(log.calory_delta, 10) || 0;
-        if (delta === 0 && log.summary && log.summary.includes('환불')) {
-          const match = log.summary.match(/\(\+(\d+)\s*Cal\)/);
-          if (match) {
-            delta = parseInt(match[1], 10);
-          }
-        }
-        sumNewDeltas += delta;
-      }
-
-      const expectedCalory = Math.max(0, initialCalory + sumNewDeltas);
-      const discrepancy = st.calory - expectedCalory;
-
-      if (discrepancy !== 0) {
-        // Protect students Choi, Oh, and Hwang explicitly just like in restore_to_payroll.js
-        if ([22, 13, 25].includes(Number(st.number)) || ['22', '13', '25'].includes(String(st.number))) {
-          console.log(`[보호] #${st.number}\t${st.name}\t${st.calory} Cal\t(예상: ${expectedCalory} Cal, 보호 예외 처리)`);
-          continue;
-        }
-
-        console.log(`#${st.number}\t${st.name}\t${st.calory} Cal\t${expectedCalory} Cal\t${discrepancy > 0 ? '+' : ''}${discrepancy} Cal`);
-        corrections.push({
-          id: st.id,
-          name: st.name,
-          number: st.number,
-          correctCalory: expectedCalory,
-          currentCalory: st.calory,
-          discrepancy: discrepancy
-        });
-      }
-    }
-
-    console.log('----------------------------------------------------------------------');
-
-    if (corrections.length === 0) {
-      console.log('✨ 분석 완료: 불일치하는 현금 잔액(복사 버그 대상자)이 발견되지 않았습니다.');
-      conn.release();
-      process.exit(0);
-    }
-
-    console.log(`⚠️ 총 ${corrections.length}명의 학생에게서 현금 잔액 불일치가 감지되었습니다.`);
-
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    rl.question('\n⚠️ 감지된 오차(복사된 돈)를 바탕으로 데이터베이스 잔액을 정정하시겠습니까? (y/n): ', async (answer) => {
-      if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-        console.log('\n⚙️ 잔액 강제 보정 시작...');
-        await conn.beginTransaction();
-        try {
-          for (const corr of corrections) {
-            await conn.query('UPDATE students SET calory = ? WHERE id = ?', [corr.correctCalory, corr.id]);
-            console.log(`✅ [#${corr.number} ${corr.name}] 잔액 보정 완료: ${corr.currentCalory} Cal ➡️ ${corr.correctCalory} Cal`);
-          }
-          await conn.commit();
-          console.log('\n🎉 모든 대상 학생의 현금 잔액이 정상 상태로 완벽하게 보정되었습니다!');
-        } catch (err) {
-          await conn.rollback();
-          console.error('❌ 보정 처리 중 오류가 발생하여 롤백했습니다:', err);
-        }
-      } else {
-        console.log('\n❌ 보정이 취소되었습니다.');
-      }
-      rl.close();
-      conn.release();
-      process.exit(0);
-    });
-
-  } catch (err) {
-    console.error('❌ 데이터베이스 분석 중 에러 발생:', err);
-    conn.release();
-    process.exit(1);
   }
+
+  await db.asyncLocalStorage.run({ dbName: targetDb }, async () => {
+    console.log(`\n=============================================`);
+    console.log(`🔄 [DB Analyzer] Connecting to database: ${targetDb}`);
+    console.log(`=============================================\n`);
+    
+    const conn = await db.getConnection();
+
+    try {
+      const [students] = await conn.query('SELECT id, name, number, calory FROM students');
+      const [logs] = await conn.query('SELECT id, student_id, calory_delta, summary, occurred_at FROM activity_logs ORDER BY occurred_at ASC');
+
+      // Group logs by student
+      const studentLogsMap = {};
+      for (const log of logs) {
+        if (log.student_id) {
+          if (!studentLogsMap[log.student_id]) {
+            studentLogsMap[log.student_id] = [];
+          }
+          studentLogsMap[log.student_id].push(log);
+        }
+      }
+
+      const corrections = [];
+      console.log('----------------------------------------------------------------------');
+      console.log('번호\t이름\t현재 잔액\t예상 잔액\t차액(복사된 현금)');
+      console.log('----------------------------------------------------------------------');
+
+      for (const st of students) {
+        const backupSt = BACKUP_STUDENTS[st.name];
+        const initialCalory = backupSt ? (parseInt(backupSt.calory, 10) || 0) : 0;
+        
+        const stLogs = studentLogsMap[st.id] || [];
+        // Filter out baseline logs
+        const newLogs = stLogs.filter(log => !BACKUP_LOG_IDS.has(log.id));
+        
+        let sumNewDeltas = 0;
+        for (const log of newLogs) {
+          let delta = parseInt(log.calory_delta, 10) || 0;
+          if (delta === 0 && log.summary && log.summary.includes('환불')) {
+            const match = log.summary.match(/\(\+(\d+)\s*Cal\)/);
+            if (match) {
+              delta = parseInt(match[1], 10);
+            }
+          }
+          sumNewDeltas += delta;
+        }
+
+        const expectedCalory = Math.max(0, initialCalory + sumNewDeltas);
+        const discrepancy = st.calory - expectedCalory;
+
+        if (discrepancy !== 0) {
+          // Protect students Choi, Oh, and Hwang explicitly just like in restore_to_payroll.js
+          if ([22, 13, 25].includes(Number(st.number)) || ['22', '13', '25'].includes(String(st.number))) {
+            console.log(`[보호] #${st.number}\t${st.name}\t${st.calory} Cal\t(예상: ${expectedCalory} Cal, 보호 예외 처리)`);
+            continue;
+          }
+
+          console.log(`#${st.number}\t${st.name}\t${st.calory} Cal\t${expectedCalory} Cal\t${discrepancy > 0 ? '+' : ''}${discrepancy} Cal`);
+          corrections.push({
+            id: st.id,
+            name: st.name,
+            number: st.number,
+            correctCalory: expectedCalory,
+            currentCalory: st.calory,
+            discrepancy: discrepancy
+          });
+        }
+      }
+
+      console.log('----------------------------------------------------------------------');
+
+      if (corrections.length === 0) {
+        console.log('✨ 분석 완료: 불일치하는 현금 잔액(복사 버그 대상자)이 발견되지 않았습니다.');
+        conn.release();
+        process.exit(0);
+      }
+
+      console.log(`⚠️ 총 ${corrections.length}명의 학생에게서 현금 잔액 불일치가 감지되었습니다.`);
+
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      rl.question('\n⚠️ 감지된 오차(복사된 돈)를 바탕으로 데이터베이스 잔액을 정정하시겠습니까? (y/n): ', async (answer) => {
+        if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
+          console.log('\n⚙️ 잔액 강제 보정 시작...');
+          await conn.beginTransaction();
+          try {
+            for (const corr of corrections) {
+              await conn.query('UPDATE students SET calory = ? WHERE id = ?', [corr.correctCalory, corr.id]);
+              console.log(`✅ [#${corr.number} ${corr.name}] 잔액 보정 완료: ${corr.currentCalory} Cal ➡️ ${corr.correctCalory} Cal`);
+            }
+            await conn.commit();
+            console.log('\n🎉 모든 대상 학생의 현금 잔액이 정상 상태로 완벽하게 보정되었습니다!');
+          } catch (err) {
+            await conn.rollback();
+            console.error('❌ 보정 처리 중 오류가 발생하여 롤백했습니다:', err);
+          }
+        } else {
+          console.log('\n❌ 보정이 취소되었습니다.');
+        }
+        rl.close();
+        conn.release();
+        process.exit(0);
+      });
+
+    } catch (err) {
+      console.error('❌ 데이터베이스 분석 중 에러 발생:', err);
+      conn.release();
+      process.exit(1);
+    }
+  });
 }
 
 main();
